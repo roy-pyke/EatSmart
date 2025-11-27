@@ -142,6 +142,54 @@ def init_db() -> None:
     if not column_exists("nutrient_goals", "day_type"):
         conn.execute("ALTER TABLE nutrient_goals ADD COLUMN day_type TEXT DEFAULT 'rest'")
         conn.execute("UPDATE nutrient_goals SET day_type = 'rest' WHERE day_type IS NULL")
+    # Rebuild nutrient_goals table if legacy unique(nutrient) constraint exists or day_type missing.
+    def needs_goal_migration() -> bool:
+        cols = conn.execute("PRAGMA table_info(nutrient_goals)").fetchall()
+        col_names = [c[1] for c in cols]
+        has_day = "day_type" in col_names
+        idx_list = conn.execute("PRAGMA index_list(nutrient_goals)").fetchall()
+        has_proper_unique = False
+        has_legacy_unique = False
+        for idx in idx_list:
+            if not idx["unique"]:
+                continue
+            idx_cols = [r[2] for r in conn.execute(f"PRAGMA index_info('{idx['name']}')")]
+            if idx_cols == ["nutrient"]:
+                has_legacy_unique = True
+            if idx_cols == ["nutrient", "day_type"]:
+                has_proper_unique = True
+        return (not has_day) or (has_legacy_unique and not has_proper_unique)
+
+    if needs_goal_migration():
+        conn.execute("ALTER TABLE nutrient_goals RENAME TO nutrient_goals_old")
+        conn.execute(
+            """
+            CREATE TABLE nutrient_goals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nutrient TEXT NOT NULL,
+                day_type TEXT NOT NULL DEFAULT 'rest',
+                min_per_day REAL,
+                max_per_day REAL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(nutrient, day_type)
+            )
+            """
+        )
+        rows = conn.execute(
+            "SELECT nutrient, min_per_day, max_per_day, created_at, updated_at, "
+            "CASE WHEN instr(lower(nutrient), '[training]') THEN 'training' ELSE 'rest' END as day_type "
+            "FROM nutrient_goals_old"
+        ).fetchall()
+        for r in rows:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO nutrient_goals (nutrient, day_type, min_per_day, max_per_day, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (r["nutrient"], r["day_type"], r["min_per_day"], r["max_per_day"], r["created_at"], r["updated_at"]),
+            )
+        conn.execute("DROP TABLE nutrient_goals_old")
 
     conn.commit()
     conn.close()

@@ -43,9 +43,20 @@
             
             <div v-if="currentTab === 'dashboard'" class="space-y-6">
                 <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                    <h2 class="text-3xl font-bold text-gray-800">营养概览</h2>
+                    <div class="flex items-center gap-4">
+                        <h2 class="text-3xl font-bold text-gray-800">营养概览</h2>
+                        <div class="bg-gray-200 rounded-lg p-1 flex text-xs font-semibold">
+                            <button @click="dashboardDayType = 'rest'" :class="['px-3 py-1 rounded transition-all', dashboardDayType === 'rest' ? 'bg-white text-blue-600 shadow' : 'text-gray-500']">
+                                休息日
+                            </button>
+                            <button @click="dashboardDayType = 'training'" :class="['px-3 py-1 rounded transition-all', dashboardDayType === 'training' ? 'bg-white text-orange-600 shadow' : 'text-gray-500']">
+                                训练日
+                            </button>
+                        </div>
+                    </div>
+                    
                     <div class="flex gap-2">
-                        <select v-model="analyticsPeriod" @change="fetchAnalytics" class="border rounded p-2 bg-white shadow-sm">
+                        <select v-model="analyticsPeriod" @change="fetchAnalytics" class="border rounded p-2 bg-white shadow-sm font-medium">
                             <option value="day">今日 (Day)</option>
                             <option value="week">本周 (Week)</option>
                             <option value="month">本月 (Month)</option>
@@ -71,7 +82,7 @@
                         <h3 class="text-gray-500 text-sm font-semibold">今日摄入 (Pacific)</h3>
                         <p class="text-xl font-bold mt-2 text-gray-800">Calories: {{ Math.round(todayTotals.Calories || 0) }} kcal</p>
                         <p class="text-sm text-gray-700">Protein: {{ Math.round(todayTotals.Protein || 0) }} g</p>
-                        <span class="text-xs text-gray-400">按美西时间当天汇总</span>
+                        <span class="text-xs text-gray-400">美西时间: {{ currentPacificDate }}</span>
                     </div>
                     <div class="bg-white p-6 rounded-lg shadow border-l-4 border-amber-500">
                         <h3 class="text-gray-500 text-sm font-semibold">记录样本</h3>
@@ -82,27 +93,31 @@
 
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <div class="bg-white p-6 rounded-lg shadow">
-                        <h3 class="text-lg font-bold mb-4 text-gray-700">目标达成度 (日均)
-                            <span class="text-xs text-gray-400 ml-2">基于有记录的 {{ analytics.active_days || 0 }} 天</span>
+                        <h3 class="text-lg font-bold mb-4 text-gray-700">目标达成度
+                            <span class="text-xs text-gray-400 ml-2 font-normal">基于 {{ analyticsPeriod==='day' ? '今日' : '日均' }} | 模式: {{ dashboardDayType==='rest'?'休息':'训练' }}</span>
                         </h3>
                         <div class="space-y-5">
-                            <div v-for="(data, nutrient) in analytics.totals" :key="nutrient" class="border-b border-gray-100 pb-3">
+                            <div v-for="nutrient in getDisplayNutrients()" :key="nutrient" class="border-b border-gray-100 pb-3">
                                 <div class="flex justify-between items-end mb-2">
                                     <span class="font-medium text-gray-700 capitalize">{{ nutrient }}</span>
-                                    <span :class="getStatusColor(data.status)" class="font-mono text-sm">
-                                        {{ data.daily_avg }} / {{ getGoalText(data.goal) }}
-                                        <span class="ml-2 text-xs px-2 py-0.5 rounded border" :class="getStatusBadge(data.status)">{{ data.status.toUpperCase() }}</span>
+                                    <span class="font-mono text-sm flex items-center gap-2">
+                                        <span :class="getStatusColor(nutrient)">
+                                            {{ getNutrientValue(nutrient) }} / {{ getGoalText(nutrient) }}
+                                        </span>
+                                        <span class="text-[10px] px-1.5 py-0.5 rounded border uppercase" :class="getStatusBadge(nutrient)">
+                                            {{ getStatusLabel(nutrient) }}
+                                        </span>
                                     </span>
                                 </div>
                                 <div class="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden">
                                     <div class="h-2.5 rounded-full transition-all duration-500" 
-                                         :class="getProgressBarColor(data.status)"
-                                         :style="{ width: Math.min((data.daily_avg / (data.goal.max_per_day || data.goal.min_per_day || data.daily_avg || 1)) * 100, 100) + '%' }"></div>
+                                         :class="getProgressBarColor(nutrient)"
+                                         :style="{ width: getProgressWidth(nutrient) }"></div>
                                 </div>
                             </div>
-                            <div v-if="Object.keys(analytics.totals || {}).length === 0" class="text-gray-400 text-center py-8">
+                            <div v-if="getDisplayNutrients().length === 0" class="text-gray-400 text-center py-8">
                                 <i class="fas fa-chart-bar text-4xl mb-2 opacity-20"></i><br>
-                                暂无数据，请先配置目标或录入数据
+                                暂无数据，请配置目标
                             </div>
                         </div>
                     </div>
@@ -528,7 +543,7 @@
     </div>
 
     <script>
-        const { createApp, ref, reactive, onMounted, nextTick } = Vue;
+        const { createApp, ref, reactive, onMounted, nextTick, computed } = Vue;
 
         createApp({
             setup() {
@@ -542,13 +557,18 @@
                 const intakes = ref([]);
                 const profile = ref({});
                 const metrics = ref({});
-                // 目标现在分 rest / training 两套
                 const goals = ref({ rest: {}, training: {} });
-                const currentGoalType = ref('rest');
+                const currentGoalType = ref('rest'); // For Profile View
+                const dashboardDayType = ref('rest'); // For Dashboard Calculation (Frontend override)
+                
+                // Analytics
                 const analytics = ref({ totals: {}, period_days: 7, active_days: 0 });
                 const analyticsMeta = ref({});
                 const todayTotals = ref({});
-                const analyticsPeriod = ref('week');
+                const analyticsPeriod = ref('day'); // Default: Daily
+                const currentPacificDate = ref('');
+
+                // Weights
                 const weights = ref([]);
                 const weightStats = ref({});
 
@@ -608,15 +628,13 @@
                     }
                 };
 
-                // --- Core Logic ---
-
                 const switchTab = (id) => {
                     currentTab.value = id;
                     fetchData();
                 };
 
                 const fetchData = async () => {
-                    // Profile & Weight Data
+                    // Always refresh critical data
                     const pData = await fetchAPI('/user/profile');
                     if (pData) {
                         profile.value = pData.profile;
@@ -624,36 +642,21 @@
                         if (pData.latest_weight) weightStats.value.latest = pData.latest_weight;
                     }
                     
-                    // Goals Data
                     const gData = await fetchAPI('/user/goals');
                     if (gData) {
                         goals.value = { rest: gData.rest || {}, training: gData.training || {} };
-                        // Ensure defaults if empty for easier editing
                         if(!goals.value.rest['Calories']) goals.value.rest['Calories'] = { min_per_day: 2000, max_per_day: 2500 };
                         if(!goals.value.training['Calories']) goals.value.training['Calories'] = { min_per_day: null, max_per_day: null };
                     }
 
-                    // Tab Specific Loading
                     if (currentTab.value === 'dashboard') fetchAnalytics();
-                    
-                    if (['meals', 'intake', 'foods'].includes(currentTab.value) || showMealModal.value) {
-                        foods.value = await fetchAPI('/foods');
-                    }
-                    
-                    if (currentTab.value === 'meals') {
-                        meals.value = await fetchAPI('/meals');
-                    }
-                    
-                    if (currentTab.value === 'intake') {
-                        intakes.value = await fetchAPI('/intakes');
-                    }
-
-                    if (currentTab.value === 'profile') {
-                        fetchWeights();
-                    }
+                    if (['meals', 'intake', 'foods'].includes(currentTab.value) || showMealModal.value) foods.value = await fetchAPI('/foods');
+                    if (currentTab.value === 'meals') meals.value = await fetchAPI('/meals');
+                    if (currentTab.value === 'intake') intakes.value = await fetchAPI('/intakes');
+                    if (currentTab.value === 'profile') fetchWeights();
                 };
 
-                // --- Dashboard ---
+                // --- Dashboard Analytics & Logic ---
                 const fetchAnalytics = async () => {
                     const data = await fetchAPI(`/analytics/summary?period=${analyticsPeriod.value}`);
                     if (data) {
@@ -668,14 +671,86 @@
                         const dailyData = await fetchAPI(`/analytics/daily-breakdown`);
                         if (dailyData) {
                             renderChart(dailyData.days);
-                            // Calculate "Today" in Pacific time to show correct today card
-                            const pacificDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
-                            const todayKey = pacificDate.toISOString().slice(0, 10);
+                            
+                            // Fix #4: Correctly identifying "Today" in Pacific time
+                            const formatter = new Intl.DateTimeFormat('en-CA', {
+                                timeZone: 'America/Los_Angeles',
+                                year: 'numeric', month: '2-digit', day: '2-digit'
+                            });
+                            const todayKey = formatter.format(new Date()); // Returns YYYY-MM-DD
+                            currentPacificDate.value = todayKey;
                             todayTotals.value = dailyData.days?.[todayKey] || {};
                         }
                     }
                 };
 
+                // Helper to get goal config based on frontend day type selection
+                const getCurrentGoal = (nutrient) => {
+                    const type = dashboardDayType.value;
+                    return goals.value[type]?.[nutrient] || {};
+                };
+
+                const getGoalText = (nutrient) => {
+                    const g = getCurrentGoal(nutrient);
+                    if (g.min_per_day && g.max_per_day) return `${g.min_per_day}-${g.max_per_day}`;
+                    if (g.min_per_day) return `> ${g.min_per_day}`;
+                    if (g.max_per_day) return `< ${g.max_per_day}`;
+                    return '-';
+                };
+
+                const getNutrientValue = (nutrient) => {
+                    return analytics.value.totals?.[nutrient]?.daily_avg || 0;
+                };
+
+                // Frontend-based Status Logic (Fix #3)
+                const getStatusLabel = (nutrient) => {
+                    const val = getNutrientValue(nutrient);
+                    const g = getCurrentGoal(nutrient);
+                    const min = g.min_per_day;
+                    const max = g.max_per_day;
+
+                    // Logic: Within 90% of min is considered "OK"
+                    if (min && val < min * 0.9) return 'low';
+                    if (max && val > max * 1.1) return 'high';
+                    return 'ok';
+                };
+
+                const getStatusColor = (nutrient) => {
+                    const s = getStatusLabel(nutrient);
+                    if (s === 'low') return 'text-yellow-600';
+                    if (s === 'high') return 'text-red-600';
+                    return 'text-green-600';
+                };
+
+                const getStatusBadge = (nutrient) => {
+                    const s = getStatusLabel(nutrient);
+                    if (s === 'low') return 'border-yellow-200 bg-yellow-50 text-yellow-600';
+                    if (s === 'high') return 'border-red-200 bg-red-50 text-red-600';
+                    return 'border-green-200 bg-green-50 text-green-600';
+                };
+
+                const getProgressBarColor = (nutrient) => {
+                    const s = getStatusLabel(nutrient);
+                    if (s === 'low') return 'bg-yellow-400';
+                    if (s === 'high') return 'bg-red-500';
+                    return 'bg-green-500';
+                };
+
+                const getProgressWidth = (nutrient) => {
+                    const val = getNutrientValue(nutrient);
+                    const g = getCurrentGoal(nutrient);
+                    const target = g.max_per_day || g.min_per_day || val || 1;
+                    return Math.min((val / target) * 100, 100) + '%';
+                };
+
+                const getDisplayNutrients = () => {
+                    // Union of tracked goals and actual intake
+                    const goalKeys = Object.keys(goals.value[dashboardDayType.value] || {});
+                    const intakeKeys = Object.keys(analytics.value.totals || {});
+                    return [...new Set([...goalKeys, ...intakeKeys])].sort();
+                };
+
+                // --- Charting ---
                 let chartInstance = null;
                 let weightChartInstance = null;
 
@@ -714,7 +789,6 @@
                     const ctx = document.getElementById('weightChart');
                     if (!ctx) return;
                     if (weightChartInstance) weightChartInstance.destroy();
-                    // Weight data might be reversed or not sorted, API sorts by desc, so reverse for chart
                     const labels = (weights.value || []).map(w => w.logged_at.slice(0, 10)).reverse();
                     const vals = (weights.value || []).map(w => w.value_kg).reverse();
                     weightChartInstance = new Chart(ctx, {
@@ -732,11 +806,10 @@
                     });
                 };
 
-                // --- Meals Logic ---
+                // --- Standard CRUD Logic (Meals, Foods, Weights) ---
                 const openMealModal = () => {
                     mealForm.name = '';
                     mealForm.day_type = 'rest';
-                    // Default to local time string for input
                     const now = new Date();
                     now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
                     mealForm.meal_time = now.toISOString().slice(0, 16);
@@ -746,17 +819,10 @@
                 };
 
                 const addMealItem = () => {
-                    mealForm.items.push({
-                        template_id: null,
-                        name: '',
-                        grams: 100,
-                        nutrients: { 'Calories': 0, 'Protein': 0, 'Carbs': 0, 'Fat': 0 }
-                    });
+                    mealForm.items.push({ template_id: null, name: '', grams: 100, nutrients: { 'Calories': 0, 'Protein': 0, 'Carbs': 0, 'Fat': 0 } });
                 };
 
-                const removeMealItem = (idx) => {
-                    mealForm.items.splice(idx, 1);
-                };
+                const removeMealItem = (idx) => mealForm.items.splice(idx, 1);
 
                 const submitMeal = async () => {
                     const payload = {
@@ -764,16 +830,8 @@
                         meal_time: new Date(mealForm.meal_time).toISOString(),
                         day_type: mealForm.day_type,
                         items: mealForm.items.map(item => {
-                            if (item.template_id) {
-                                return { template_id: item.template_id, grams: item.grams };
-                            } else {
-                                return { 
-                                    name: item.name || 'Custom Food', 
-                                    grams: item.grams, 
-                                    nutrients: item.nutrients,
-                                    nutrients_base_quantity: 100 
-                                };
-                            }
+                            if (item.template_id) return { template_id: item.template_id, grams: item.grams };
+                            else return { name: item.name || 'Custom Food', grams: item.grams, nutrients: item.nutrients, nutrients_base_quantity: 100 };
                         })
                     };
                     await fetchAPI('/meals', 'POST', payload);
@@ -782,161 +840,56 @@
                 };
 
                 const deleteMeal = async (id) => {
-                    if(confirm("确定删除整餐及其中所有记录吗？")) {
-                        await fetchAPI(`/meals/${id}`, 'DELETE');
-                        fetchData();
-                    }
-                };
-                
-                const onMealItemTemplateChange = (item) => {
-                    // Placeholder for future logic
+                    if(confirm("确定删除整餐?")) { await fetchAPI(`/meals/${id}`, 'DELETE'); fetchData(); }
                 };
 
-                // --- Weight Logic ---
-                const resetWeightForm = () => {
-                    weightForm.id = null;
-                    weightForm.value_kg = '';
-                    const now = new Date();
-                    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
-                    weightForm.logged_at = now.toISOString().slice(0, 16);
-                    weightForm.note = '';
-                };
+                const onMealItemTemplateChange = (item) => {}; // Placeholder
 
-                const editWeight = (w) => {
-                    weightForm.id = w.id;
-                    weightForm.value_kg = w.value_kg;
-                    const dt = new Date(w.logged_at);
-                    dt.setMinutes(dt.getMinutes() - dt.getTimezoneOffset());
-                    weightForm.logged_at = dt.toISOString().slice(0, 16);
-                    weightForm.note = w.note || '';
-                };
-
-                const submitWeight = async () => {
-                    const loggedIso = weightForm.logged_at ? new Date(weightForm.logged_at).toISOString() : new Date().toISOString();
-                    const payload = {
-                        value_kg: weightForm.value_kg,
-                        logged_at: loggedIso,
-                        note: weightForm.note || null
-                    };
-                    if (weightForm.id) {
-                        await fetchAPI(`/weights/${weightForm.id}`, 'PUT', payload);
-                    } else {
-                        await fetchAPI('/weights', 'POST', payload);
-                    }
-                    resetWeightForm();
-                    fetchWeights();
-                    // Update profile metrics as weight changed
-                    fetchAPI('/user/profile').then(res => { if(res) metrics.value = res.metrics; });
-                };
-
-                const deleteWeight = async (id) => {
-                    if (confirm('删除此条体重记录?')) {
-                        await fetchAPI(`/weights/${id}`, 'DELETE');
-                        fetchWeights();
-                    }
-                };
-
-                const fetchWeights = async () => {
-                    const data = await fetchAPI('/weights');
-                    if (data) {
-                        weights.value = data;
-                        const stats = await fetchAPI('/weights/summary');
-                        if (stats) weightStats.value = stats;
-                        renderWeightChart();
-                    }
-                };
-
-                // --- Other Logic ---
                 const deleteIntake = async (id) => {
-                    if(confirm("删除此条记录?")) {
-                        await fetchAPI(`/intakes/${id}`, 'DELETE');
-                        fetchData();
-                    }
+                    if(confirm("删除此条记录?")) { await fetchAPI(`/intakes/${id}`, 'DELETE'); fetchData(); }
                 };
 
-                const openFoodModal = () => {
-                    resetFoodForm();
-                    showFoodModal.value = true;
+                const openFoodModal = () => { resetFoodForm(); showFoodModal.value = true; };
+                const resetFoodForm = () => {
+                    foodForm.id = null; foodForm.name = ''; foodForm.category = ''; foodForm.base_quantity = 100;
+                    foodForm.nutrients = { 'Calories': 0, 'Protein': 0, 'Carbs': 0, 'Fat': 0 }; foodForm.favorite = false;
                 };
-
                 const editFood = (food) => {
-                    foodForm.id = food.id;
-                    foodForm.name = food.name;
-                    foodForm.category = food.category;
-                    foodForm.base_quantity = food.base_quantity;
+                    Object.assign(foodForm, JSON.parse(JSON.stringify(food)));
                     foodForm.nutrients = JSON.parse(JSON.stringify(food.nutrients_per_base));
-                    foodForm.favorite = food.favorite;
                     showFoodModal.value = true;
                 };
-
                 const submitFood = async () => {
-                    const payload = { ...foodForm };
-                    delete payload.id;
-                    if (foodForm.id) {
-                        await fetchAPI(`/foods/${foodForm.id}`, 'PUT', payload);
-                    } else {
-                        await fetchAPI('/foods', 'POST', payload);
-                    }
-                    showFoodModal.value = false;
-                    fetchData();
+                    const payload = { ...foodForm }; delete payload.id;
+                    if (foodForm.id) await fetchAPI(`/foods/${foodForm.id}`, 'PUT', payload);
+                    else await fetchAPI('/foods', 'POST', payload);
+                    showFoodModal.value = false; fetchData();
                 };
-
-                const deleteFood = async (id) => {
-                    if(confirm("删除此食物模板?")) {
-                        await fetchAPI(`/foods/${id}`, 'DELETE');
-                        fetchData();
-                    }
-                };
-
-                const toggleFavorite = async (food) => {
-                    await fetchAPI(`/foods/${food.id}`, 'PUT', { favorite: !food.favorite });
-                    fetchData();
-                };
-
+                const deleteFood = async (id) => { if(confirm("删除模板?")) { await fetchAPI(`/foods/${id}`, 'DELETE'); fetchData(); } };
+                const toggleFavorite = async (food) => { await fetchAPI(`/foods/${food.id}`, 'PUT', { favorite: !food.favorite }); fetchData(); };
+                
                 const submitBulkImport = async () => {
                     try {
-                        const data = JSON.parse(bulkImportJson.value);
-                        await fetchAPI('/foods/bulk_import', 'POST', data);
-                        showBulkImport.value = false;
-                        fetchData();
-                    } catch (e) {
-                        alert("Invalid JSON format");
-                    }
-                };
-
-                const resetFoodForm = () => {
-                    foodForm.id = null;
-                    foodForm.name = '';
-                    foodForm.category = '';
-                    foodForm.base_quantity = 100;
-                    foodForm.nutrients = { 'Calories': 0, 'Protein': 0, 'Carbs': 0, 'Fat': 0 };
-                    foodForm.favorite = false;
+                        await fetchAPI('/foods/bulk_import', 'POST', JSON.parse(bulkImportJson.value));
+                        showBulkImport.value = false; fetchData();
+                    } catch(e) { alert("Invalid JSON"); }
                 };
 
                 const updateProfile = async () => {
                     const res = await fetchAPI('/user/profile', 'PUT', profile.value);
-                    if (res) {
-                        metrics.value = res.metrics;
-                        if (res.latest_weight) weightStats.value.latest = res.latest_weight;
-                    }
-                    alert("个人信息已更新");
+                    if(res) { metrics.value = res.metrics; if(res.latest_weight) weightStats.value.latest = res.latest_weight; }
+                    alert("已更新");
                 };
 
                 const saveGoals = async () => {
                     const payload = [];
-                    // Flatten goals for backend
-                    Object.keys(goals.value).forEach(dayType => {
-                        Object.keys(goals.value[dayType]).forEach(k => {
-                            payload.push({
-                                nutrient: k,
-                                min_per_day: goals.value[dayType][k].min_per_day,
-                                max_per_day: goals.value[dayType][k].max_per_day,
-                                day_type: dayType
-                            });
+                    Object.keys(goals.value).forEach(dt => {
+                        Object.keys(goals.value[dt]).forEach(k => {
+                            payload.push({ nutrient: k, day_type: dt, min_per_day: goals.value[dt][k].min_per_day, max_per_day: goals.value[dt][k].max_per_day });
                         });
                     });
                     await fetchAPI('/user/goals', 'PUT', payload);
-                    alert("目标已保存");
+                    alert("已保存");
                 };
 
                 const addGoal = () => {
@@ -946,63 +899,47 @@
                     }
                 };
 
-                const formatTime = (iso) => {
-                    if (!iso) return '';
-                    return new Date(iso).toLocaleString('zh-CN', { 
-                        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' 
-                    });
+                const resetWeightForm = () => {
+                    weightForm.id = null; weightForm.value_kg = ''; weightForm.note = '';
+                    const now = new Date(); now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+                    weightForm.logged_at = now.toISOString().slice(0, 16);
+                };
+                const submitWeight = async () => {
+                    const payload = { value_kg: weightForm.value_kg, logged_at: new Date(weightForm.logged_at).toISOString(), note: weightForm.note || null };
+                    if(weightForm.id) await fetchAPI(`/weights/${weightForm.id}`, 'PUT', payload);
+                    else await fetchAPI('/weights', 'POST', payload);
+                    resetWeightForm(); fetchWeights(); fetchAPI('/user/profile').then(r => {if(r) metrics.value = r.metrics;});
+                };
+                const editWeight = (w) => {
+                    weightForm.id = w.id; weightForm.value_kg = w.value_kg; weightForm.note = w.note || '';
+                    const dt = new Date(w.logged_at); dt.setMinutes(dt.getMinutes() - dt.getTimezoneOffset());
+                    weightForm.logged_at = dt.toISOString().slice(0, 16);
+                };
+                const deleteWeight = async (id) => { if(confirm("删除?")) { await fetchAPI(`/weights/${id}`, 'DELETE'); fetchWeights(); } };
+                const fetchWeights = async () => {
+                    weights.value = await fetchAPI('/weights');
+                    weightStats.value = await fetchAPI('/weights/summary');
+                    renderWeightChart();
                 };
 
+                const formatTime = (iso) => iso ? new Date(iso).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' }) : '';
                 const filterMainNutrients = (totals) => {
-                    const keyOne = {};
-                    ['Calories', 'Protein', 'Fat', 'Carbs'].forEach(k => {
-                        if(totals[k] !== undefined) keyOne[k] = totals[k];
-                    });
-                    return keyOne;
+                    const keyOne = {}; ['Calories', 'Protein', 'Fat', 'Carbs'].forEach(k => { if(totals[k]!==undefined) keyOne[k] = totals[k]; }); return keyOne;
                 };
 
-                const getStatusColor = (status) => {
-                    if (status === 'low') return 'text-yellow-600';
-                    if (status === 'high') return 'text-red-600';
-                    return 'text-green-600';
-                };
-                
-                const getStatusBadge = (status) => {
-                    if (status === 'low') return 'border-yellow-200 bg-yellow-50 text-yellow-600';
-                    if (status === 'high') return 'border-red-200 bg-red-50 text-red-600';
-                    return 'border-green-200 bg-green-50 text-green-600';
-                };
-
-                const getProgressBarColor = (status) => {
-                    if (status === 'low') return 'bg-yellow-400';
-                    if (status === 'high') return 'bg-red-500';
-                    return 'bg-green-500';
-                };
-
-                const getGoalText = (goal) => {
-                    if (goal.min_per_day && goal.max_per_day) return `${goal.min_per_day}-${goal.max_per_day}`;
-                    if (goal.min_per_day) return `> ${goal.min_per_day}`;
-                    if (goal.max_per_day) return `< ${goal.max_per_day}`;
-                    return '-';
-                };
-
-                onMounted(() => {
-                    resetWeightForm();
-                    fetchData();
-                });
+                onMounted(() => { resetWeightForm(); fetchData(); });
 
                 return {
                     apiUrl, tabs, currentTab, backendStatus, switchTab,
-                    foods, meals, intakes, profile, metrics, goals, currentGoalType, analytics, analyticsMeta, todayTotals, analyticsPeriod,
+                    foods, meals, intakes, profile, metrics, goals, currentGoalType, dashboardDayType, analytics, analyticsMeta, todayTotals, analyticsPeriod, currentPacificDate,
                     weights, weightStats,
                     showMealModal, showFoodModal, showBulkImport, mealForm, foodForm, newGoalName, newNutrientKey, bulkImportJson, weightForm,
-                    fetchData, fetchAnalytics, fetchWeights,
+                    fetchAnalytics, fetchWeights,
                     openMealModal, addMealItem, removeMealItem, submitMeal, deleteMeal, onMealItemTemplateChange,
-                    deleteIntake, 
-                    openFoodModal, editFood, submitFood, deleteFood, toggleFavorite, submitBulkImport, 
-                    updateProfile, saveGoals, addGoal,
+                    deleteIntake, openFoodModal, editFood, submitFood, deleteFood, toggleFavorite, submitBulkImport, updateProfile, saveGoals, addGoal,
                     resetWeightForm, editWeight, submitWeight, deleteWeight,
-                    formatTime, filterMainNutrients, getStatusColor, getStatusBadge, getProgressBarColor, getGoalText
+                    formatTime, filterMainNutrients,
+                    getGoalText, getNutrientValue, getStatusLabel, getStatusColor, getStatusBadge, getProgressBarColor, getProgressWidth, getDisplayNutrients
                 };
             }
         }).mount('#app');
