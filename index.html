@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EatSmart 营养管理系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f3f4f6; }
+        .nav-item.active { background-color: #3b82f6; color: white; }
+    </style>
+</head>
+<body>
+    <div id="app" class="flex h-screen overflow-hidden">
+        
+        <aside class="w-64 bg-white shadow-md flex-shrink-0 flex flex-col justify-between">
+            <div>
+                <div class="p-6 text-2xl font-bold text-blue-600 border-b flex items-center gap-2">
+                    <i class="fas fa-apple-alt"></i> EatSmart
+                </div>
+                <nav class="mt-6">
+                    <a v-for="tab in tabs" :key="tab.id" 
+                       @click="currentTab = tab.id; fetchData()"
+                       :class="['nav-item flex items-center px-6 py-3 cursor-pointer hover:bg-blue-50 transition-colors', currentTab === tab.id ? 'active' : 'text-gray-600']">
+                        <i :class="['fas w-6', tab.icon]"></i>
+                        <span>{{ tab.name }}</span>
+                    </a>
+                </nav>
+            </div>
+            <div class="p-4 text-xs text-gray-400 text-center">
+                Backend Status: <span :class="backendStatus ? 'text-green-500' : 'text-red-500'">{{ backendStatus ? 'Connected' : 'Disconnected' }}</span>
+            </div>
+        </aside>
+
+        <main class="flex-1 overflow-y-auto p-8">
+            
+            <div v-if="currentTab === 'dashboard'" class="space-y-6">
+                <header class="flex justify-between items-center">
+                    <h2 class="text-3xl font-bold text-gray-800">营养概览</h2>
+                    <div class="flex gap-2">
+                        <select v-model="analyticsPeriod" @change="fetchAnalytics" class="border rounded p-2">
+                            <option value="week">本周 (Week)</option>
+                            <option value="month">本月 (Month)</option>
+                        </select>
+                        <a :href="`${apiUrl}/analytics/export?format=csv`" target="_blank" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">
+                            <i class="fas fa-file-csv"></i> 导出 CSV
+                        </a>
+                    </div>
+                </header>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-blue-500">
+                        <h3 class="text-gray-500 text-sm">BMI 指数</h3>
+                        <p class="text-2xl font-bold mt-2">{{ metrics.bmi || '--' }}</p>
+                        <span class="text-xs text-gray-400">基于最新身高体重</span>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-purple-500">
+                        <h3 class="text-gray-500 text-sm">基础代谢 (BMR)</h3>
+                        <p class="text-2xl font-bold mt-2">{{ metrics.bmr || '--' }} <span class="text-sm font-normal">kcal/day</span></p>
+                        <span class="text-xs text-gray-400">仅供参考</span>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-green-500">
+                        <h3 class="text-gray-500 text-sm">记录样本</h3>
+                        <p class="text-2xl font-bold mt-2">{{ analytics.sample_size || 0 }} <span class="text-sm font-normal">条记录</span></p>
+                        <span class="text-xs text-gray-400">所选周期内</span>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="bg-white p-6 rounded-lg shadow">
+                        <h3 class="text-lg font-bold mb-4">目标达成度 (平均每日)</h3>
+                        <div class="space-y-4">
+                            <div v-for="(data, nutrient) in analytics.totals" :key="nutrient" class="border-b pb-2">
+                                <div class="flex justify-between items-end mb-1">
+                                    <span class="font-medium capitalize">{{ nutrient }}</span>
+                                    <span :class="getStatusColor(data.status)">
+                                        {{ data.daily_avg }} / {{ getGoalText(data.goal) }}
+                                        <span class="text-xs ml-1 px-1 rounded border" :class="getStatusBadge(data.status)">{{ data.status.toUpperCase() }}</span>
+                                    </span>
+                                </div>
+                                <div class="w-full bg-gray-200 rounded-full h-2.5">
+                                    <div class="bg-blue-600 h-2.5 rounded-full" 
+                                         :style="{ width: Math.min((data.daily_avg / (data.goal.max_per_day || data.goal.min_per_day || data.daily_avg)) * 100, 100) + '%' }"></div>
+                                </div>
+                            </div>
+                            <div v-if="Object.keys(analytics.totals || {}).length === 0" class="text-gray-400 text-center py-4">
+                                暂无数据，请先录入目标和摄入记录
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white p-6 rounded-lg shadow">
+                        <h3 class="text-lg font-bold mb-4">摄入趋势</h3>
+                        <canvas id="trendChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div v-if="currentTab === 'intake'" class="space-y-6">
+                <header class="flex justify-between items-center">
+                    <h2 class="text-3xl font-bold text-gray-800">饮食记录</h2>
+                    <button @click="showIntakeModal = true; resetIntakeForm()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+                        <i class="fas fa-plus"></i> 新增记录
+                    </button>
+                </header>
+
+                <div class="bg-white shadow rounded-lg overflow-hidden">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">时间</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">食物名称</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">类别</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">分量 (g)</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">主要营养素</th>
+                                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            <tr v-for="intake in intakes" :key="intake.id">
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ formatTime(intake.intake_at) }}</td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{{ intake.name }}</td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">
+                                        {{ intake.category || '无' }}
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ intake.grams }}g</td>
+                                <td class="px-6 py-4 text-sm text-gray-500">
+                                    <div class="flex flex-wrap gap-1">
+                                        <span v-for="(val, key) in filterMainNutrients(intake.totals)" :key="key" class="text-xs border px-1 rounded">
+                                            {{ key }}: {{ val }}
+                                        </span>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                    <button @click="deleteIntake(intake.id)" class="text-red-600 hover:text-red-900 ml-2">删除</button>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div v-if="currentTab === 'foods'" class="space-y-6">
+                <header class="flex justify-between items-center">
+                    <h2 class="text-3xl font-bold text-gray-800">食物库</h2>
+                    <div class="flex gap-2">
+                        <button @click="showBulkImport = true" class="text-gray-600 bg-white border px-4 py-2 rounded hover:bg-gray-50">批量导入</button>
+                        <button @click="showFoodModal = true; resetFoodForm()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+                            <i class="fas fa-plus"></i> 新增食物模板
+                        </button>
+                    </div>
+                </header>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <div v-for="food in foods" :key="food.id" class="bg-white p-5 rounded-lg shadow hover:shadow-md transition-shadow relative group">
+                        <div class="flex justify-between items-start">
+                            <div>
+                                <h3 class="font-bold text-lg text-gray-800">{{ food.name }}</h3>
+                                <span class="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded">{{ food.category || '未分类' }}</span>
+                            </div>
+                            <i v-if="food.favorite" class="fas fa-star text-yellow-400"></i>
+                        </div>
+                        <div class="mt-4 text-sm text-gray-600">
+                            <p class="font-semibold mb-1">每 100g 含:</p>
+                            <ul class="grid grid-cols-2 gap-1">
+                                <li v-for="(val, key) in food.nutrients_per_100g" :key="key" class="truncate">
+                                    <span class="text-gray-400">{{ key }}:</span> {{ val }}
+                                </li>
+                            </ul>
+                        </div>
+                        <div class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button @click="toggleFavorite(food)" class="text-yellow-500 p-1 hover:bg-yellow-50 rounded"><i :class="food.favorite ? 'fas fa-star' : 'far fa-star'"></i></button>
+                            <button @click="editFood(food)" class="text-blue-500 p-1 hover:bg-blue-50 rounded"><i class="fas fa-edit"></i></button>
+                            <button @click="deleteFood(food.id)" class="text-red-500 p-1 hover:bg-red-50 rounded"><i class="fas fa-trash"></i></button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div v-if="currentTab === 'profile'" class="space-y-6">
+                <h2 class="text-3xl font-bold text-gray-800">个人配置</h2>
+                
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div class="bg-white p-6 rounded-lg shadow">
+                        <h3 class="text-xl font-bold mb-4 border-b pb-2">基本资料</h3>
+                        <form @submit.prevent="updateProfile" class="space-y-4">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700">身高 (cm)</label>
+                                    <input v-model.number="profile.height_cm" type="number" class="mt-1 block w-full rounded border-gray-300 shadow-sm border p-2">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700">体重 (kg)</label>
+                                    <input v-model.number="profile.weight_kg" type="number" step="0.1" class="mt-1 block w-full rounded border-gray-300 shadow-sm border p-2">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700">年龄</label>
+                                    <input v-model.number="profile.age" type="number" class="mt-1 block w-full rounded border-gray-300 shadow-sm border p-2">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700">性别</label>
+                                    <select v-model="profile.sex" class="mt-1 block w-full rounded border-gray-300 shadow-sm border p-2">
+                                        <option value="male">男 (Male)</option>
+                                        <option value="female">女 (Female)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">保存并计算 BMI/BMR</button>
+                        </form>
+                    </div>
+
+                    <div class="bg-white p-6 rounded-lg shadow">
+                        <h3 class="text-xl font-bold mb-4 border-b pb-2">每日营养目标</h3>
+                        <div class="space-y-3 max-h-96 overflow-y-auto">
+                            <div v-for="(range, nutrient) in goals" :key="nutrient" class="flex items-center gap-2 text-sm">
+                                <span class="w-24 font-medium truncate" :title="nutrient">{{ nutrient }}</span>
+                                <input v-model.number="goals[nutrient].min_per_day" placeholder="Min" type="number" class="w-20 border rounded p-1">
+                                <span class="text-gray-400">-</span>
+                                <input v-model.number="goals[nutrient].max_per_day" placeholder="Max" type="number" class="w-20 border rounded p-1">
+                            </div>
+                            <div class="flex items-center gap-2 text-sm border-t pt-2 mt-2">
+                                <input v-model="newGoalName" placeholder="新营养素名称 (如 Protein)" class="w-24 border rounded p-1">
+                                <button @click="addGoal" class="text-blue-600 hover:text-blue-800 text-xs">添加</button>
+                            </div>
+                        </div>
+                        <button @click="saveGoals" class="mt-4 w-full bg-green-600 text-white py-2 rounded hover:bg-green-700">保存目标设置</button>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+
+        <div v-if="showIntakeModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+            <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
+                <h3 class="text-xl font-bold mb-4">记录饮食</h3>
+                <form @submit.prevent="submitIntake" class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium">选择食物</label>
+                        <select v-model="intakeForm.template_id" class="w-full border p-2 rounded mt-1" @change="onFoodSelect">
+                            <option :value="null">-- 手动录入 (Custom) --</option>
+                            <option v-for="f in foods" :key="f.id" :value="f.id">
+                                {{ f.name }} {{ f.favorite ? '★' : '' }}
+                            </option>
+                        </select>
+                    </div>
+                    
+                    <div v-if="!intakeForm.template_id" class="p-3 bg-gray-50 rounded border">
+                        <input v-model="intakeForm.name" placeholder="食物名称" class="w-full border p-1 mb-2 rounded" required>
+                        <p class="text-xs text-gray-500 mb-1">营养素 (每 100g):</p>
+                        <div v-for="(val, key) in intakeForm.nutrients" :key="key" class="flex gap-1 mb-1">
+                            <span class="text-sm w-20">{{ key }}</span>
+                            <input v-model.number="intakeForm.nutrients[key]" type="number" class="w-full border p-1 h-6 text-sm">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium">摄入量 (g)</label>
+                        <input v-model.number="intakeForm.grams" type="number" step="1" class="w-full border p-2 rounded mt-1" required min="1">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium">时间</label>
+                        <input v-model="intakeForm.intake_at" type="datetime-local" class="w-full border p-2 rounded mt-1">
+                    </div>
+
+                    <div class="flex justify-end gap-2 mt-6">
+                        <button type="button" @click="showIntakeModal = false" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">取消</button>
+                        <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">提交</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div v-if="showFoodModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+            <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
+                <h3 class="text-xl font-bold mb-4">{{ foodForm.id ? '编辑食物' : '新增食物' }}</h3>
+                <form @submit.prevent="submitFood" class="space-y-3">
+                    <input v-model="foodForm.name" placeholder="名称 (Name)" class="w-full border p-2 rounded" required>
+                    <input v-model="foodForm.category" placeholder="类别 (Category)" class="w-full border p-2 rounded">
+                    
+                    <div class="border-t pt-2">
+                        <label class="block text-sm font-medium mb-1">营养成分 (基准: {{foodForm.base_quantity}}g)</label>
+                        <div class="flex items-center gap-2 mb-2">
+                            <span class="text-xs text-gray-500">录入基准量(g):</span>
+                            <input v-model.number="foodForm.base_quantity" type="number" class="w-20 border p-1 text-sm">
+                        </div>
+                        <div class="space-y-2">
+                            <div v-for="(val, key) in foodForm.nutrients" :key="key" class="flex items-center gap-2">
+                                <span class="w-1/3 text-sm truncate">{{ key }}</span>
+                                <input v-model.number="foodForm.nutrients[key]" type="number" step="0.1" class="w-full border p-1 rounded" required>
+                                <button type="button" @click="delete foodForm.nutrients[key]" class="text-red-400 hover:text-red-600">×</button>
+                            </div>
+                            <div class="flex gap-2 mt-2">
+                                <input v-model="newNutrientKey" placeholder="添加其他 (如 Sugar)" class="w-full border p-1 text-sm">
+                                <button type="button" @click="if(newNutrientKey){ foodForm.nutrients[newNutrientKey]=0; newNutrientKey='' }" class="bg-gray-200 px-2 rounded">+</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-2 mt-4">
+                        <input type="checkbox" v-model="foodForm.favorite" id="isFav">
+                        <label for="isFav" class="text-sm">设为常吃 (Favorite)</label>
+                    </div>
+
+                    <div class="flex justify-end gap-2 mt-6">
+                        <button type="button" @click="showFoodModal = false" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">取消</button>
+                        <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">保存</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div v-if="showBulkImport" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+            <div class="bg-white rounded-lg shadow-xl w-full max-w-lg p-6">
+                <h3 class="text-xl font-bold mb-2">批量导入食物 (JSON)</h3>
+                <p class="text-xs text-gray-500 mb-2">格式: Array of objects with name, base_quantity, nutrients object.</p>
+                <textarea v-model="bulkImportJson" class="w-full h-48 border p-2 text-xs font-mono bg-gray-50" placeholder='[{"name":"Banana", "base_quantity":100, "nutrients":{"Calories":89, "Carbs":22.8}}]'></textarea>
+                <div class="flex justify-end gap-2 mt-4">
+                    <button @click="showBulkImport = false" class="px-4 py-2 text-gray-600">取消</button>
+                    <button @click="submitBulkImport" class="px-4 py-2 bg-green-600 text-white rounded">导入</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        const { createApp, ref, reactive, onMounted, computed } = Vue;
+
+        createApp({
+            setup() {
+                const apiUrl = 'http://localhost:8000';
+                const currentTab = ref('dashboard');
+                const backendStatus = ref(false);
+                
+                // Data States
+                const foods = ref([]);
+                const intakes = ref([]);
+                const profile = ref({ height_cm: null, weight_kg: null, age: null, sex: 'male' });
+                const metrics = ref({ bmi: null, bmr: null });
+                const goals = ref({});
+                const analytics = ref({ totals: {}, period_days: 7 });
+                const analyticsPeriod = ref('week');
+
+                // UI States
+                const showIntakeModal = ref(false);
+                const showFoodModal = ref(false);
+                const showBulkImport = ref(false);
+                const newGoalName = ref('');
+                const newNutrientKey = ref('');
+                const bulkImportJson = ref('');
+
+                // Forms
+                const intakeForm = reactive({
+                    template_id: null,
+                    name: '',
+                    grams: 100,
+                    nutrients: { 'Calories': 0, 'Protein': 0, 'Carbs': 0, 'Fat': 0 },
+                    intake_at: new Date().toISOString().slice(0, 16)
+                });
+
+                const foodForm = reactive({
+                    id: null,
+                    name: '',
+                    category: '',
+                    base_quantity: 100,
+                    nutrients: { 'Calories': 0, 'Protein': 0, 'Carbs': 0, 'Fat': 0 },
+                    favorite: false
+                });
+
+                const tabs = [
+                    { id: 'dashboard', name: '仪表盘', icon: 'fa-chart-pie' },
+                    { id: 'intake', name: '饮食记录', icon: 'fa-utensils' },
+                    { id: 'foods', name: '食物库', icon: 'fa-book-open' },
+                    { id: 'profile', name: '个人配置', icon: 'fa-user-cog' },
+                ];
+
+                // Helpers
+                const fetchAPI = async (endpoint, method = 'GET', body = null) => {
+                    try {
+                        const opts = { method, headers: { 'Content-Type': 'application/json' } };
+                        if (body) opts.body = JSON.stringify(body);
+                        const res = await fetch(`${apiUrl}${endpoint}`, opts);
+                        if (!res.ok) throw new Error('API Error');
+                        backendStatus.value = true;
+                        return await res.json();
+                    } catch (e) {
+                        console.error(e);
+                        backendStatus.value = false;
+                        return null;
+                    }
+                };
+
+                // Load Data
+                const fetchData = async () => {
+                    // Profile & Goals loaded globally for calculation
+                    const pData = await fetchAPI('/user/profile');
+                    if (pData) {
+                        profile.value = pData.profile;
+                        metrics.value = pData.metrics;
+                    }
+                    const gData = await fetchAPI('/user/goals');
+                    if (gData) {
+                        goals.value = gData;
+                        // Ensure defaults if empty
+                        if(!goals.value['Calories']) goals.value['Calories'] = { min_per_day: 2000, max_per_day: 2500 };
+                    }
+
+                    if (currentTab.value === 'dashboard') fetchAnalytics();
+                    if (currentTab.value === 'foods' || currentTab.value === 'intake') {
+                        foods.value = await fetchAPI('/foods');
+                    }
+                    if (currentTab.value === 'intake') {
+                        intakes.value = await fetchAPI('/intakes');
+                    }
+                };
+
+                // Dashboard
+                const fetchAnalytics = async () => {
+                    const data = await fetchAPI(`/analytics/summary?period=${analyticsPeriod.value}`);
+                    if (data) {
+                        analytics.value = data.summary;
+                        // Render Chart
+                        const dailyData = await fetchAPI(`/analytics/daily-breakdown`);
+                        renderChart(dailyData.days);
+                    }
+                };
+
+                let chartInstance = null;
+                const renderChart = (daysData) => {
+                    const ctx = document.getElementById('trendChart');
+                    if (!ctx) return;
+                    if (chartInstance) chartInstance.destroy();
+                    
+                    const labels = Object.keys(daysData).sort();
+                    const calories = labels.map(d => daysData[d]['Calories'] || 0);
+                    const protein = labels.map(d => daysData[d]['Protein'] || 0);
+
+                    chartInstance = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [
+                                { label: 'Calories', data: calories, borderColor: 'rgb(59, 130, 246)', yAxisID: 'y' },
+                                { label: 'Protein (g)', data: protein, borderColor: 'rgb(16, 185, 129)', yAxisID: 'y1' }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            interaction: { mode: 'index', intersect: false },
+                            scales: {
+                                y: { type: 'linear', display: true, position: 'left' },
+                                y1: { type: 'linear', display: true, position: 'right', grid: { drawOnChartArea: false } },
+                            }
+                        }
+                    });
+                };
+
+                // Actions
+                const submitIntake = async () => {
+                    const payload = {
+                        grams: intakeForm.grams,
+                        intake_at: intakeForm.intake_at,
+                    };
+                    if (intakeForm.template_id) {
+                        payload.template_id = intakeForm.template_id;
+                    } else {
+                        payload.name = intakeForm.name;
+                        payload.nutrients = intakeForm.nutrients;
+                    }
+                    await fetchAPI('/intakes', 'POST', payload);
+                    showIntakeModal.value = false;
+                    fetchData();
+                };
+
+                const deleteIntake = async (id) => {
+                    if(confirm("确定删除?")) {
+                        await fetchAPI(`/intakes/${id}`, 'DELETE');
+                        fetchData();
+                    }
+                };
+
+                const submitFood = async () => {
+                    const payload = { ...foodForm };
+                    delete payload.id;
+                    if (foodForm.id) {
+                        await fetchAPI(`/foods/${foodForm.id}`, 'PUT', payload);
+                    } else {
+                        await fetchAPI('/foods', 'POST', payload);
+                    }
+                    showFoodModal.value = false;
+                    fetchData();
+                };
+
+                const deleteFood = async (id) => {
+                    if(confirm("删除此食物模板?")) {
+                        await fetchAPI(`/foods/${id}`, 'DELETE');
+                        fetchData();
+                    }
+                };
+
+                const toggleFavorite = async (food) => {
+                    await fetchAPI(`/foods/${food.id}`, 'PUT', { favorite: !food.favorite });
+                    fetchData();
+                };
+
+                const submitBulkImport = async () => {
+                    try {
+                        const data = JSON.parse(bulkImportJson.value);
+                        await fetchAPI('/foods/bulk_import', 'POST', data);
+                        showBulkImport.value = false;
+                        fetchData();
+                    } catch (e) {
+                        alert("Invalid JSON format");
+                    }
+                };
+
+                const updateProfile = async () => {
+                    const res = await fetchAPI('/user/profile', 'PUT', profile.value);
+                    if (res) metrics.value = res.metrics;
+                    alert("个人信息已更新");
+                };
+
+                const saveGoals = async () => {
+                    const payload = Object.keys(goals.value).map(k => ({
+                        nutrient: k,
+                        min_per_day: goals.value[k].min_per_day,
+                        max_per_day: goals.value[k].max_per_day
+                    }));
+                    await fetchAPI('/user/goals', 'PUT', payload);
+                    alert("目标已保存");
+                };
+
+                const addGoal = () => {
+                    if (newGoalName.value && !goals.value[newGoalName.value]) {
+                        goals.value[newGoalName.value] = { min_per_day: null, max_per_day: null };
+                        newGoalName.value = '';
+                    }
+                };
+
+                // UI Helpers
+                const resetIntakeForm = () => {
+                    intakeForm.template_id = null;
+                    intakeForm.name = '';
+                    intakeForm.grams = 100;
+                    intakeForm.nutrients = { 'Calories': 0, 'Protein': 0, 'Carbs': 0, 'Fat': 0 };
+                    intakeForm.intake_at = new Date().toISOString().slice(0, 16);
+                };
+                
+                const resetFoodForm = () => {
+                    foodForm.id = null;
+                    foodForm.name = '';
+                    foodForm.category = '';
+                    foodForm.base_quantity = 100;
+                    foodForm.nutrients = { 'Calories': 0, 'Protein': 0, 'Carbs': 0, 'Fat': 0 };
+                    foodForm.favorite = false;
+                };
+
+                const editFood = (food) => {
+                    Object.assign(foodForm, JSON.parse(JSON.stringify(food)));
+                    // Backend returns nutrients_per_100g, but form expects nutrients map. 
+                    // Since backend normalizes on save, we can edit the 100g version directly.
+                    foodForm.nutrients = food.nutrients_per_100g; 
+                    foodForm.base_quantity = 100; 
+                    showFoodModal.value = true;
+                };
+                
+                const filterMainNutrients = (totals) => {
+                    // Just show top few for list view
+                    const keyOne = {};
+                    ['Calories', 'Protein', 'Fat', 'Carbs'].forEach(k => {
+                        if(totals[k] !== undefined) keyOne[k] = totals[k];
+                    });
+                    return keyOne;
+                };
+
+                const formatTime = (iso) => {
+                    return new Date(iso).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                };
+
+                const getStatusColor = (status) => {
+                    if (status === 'low') return 'text-yellow-600';
+                    if (status === 'high') return 'text-red-600';
+                    return 'text-green-600';
+                };
+
+                const getStatusBadge = (status) => {
+                    if (status === 'low') return 'border-yellow-600 text-yellow-600';
+                    if (status === 'high') return 'border-red-600 text-red-600';
+                    return 'border-green-600 text-green-600';
+                };
+
+                const getGoalText = (goal) => {
+                    if (goal.min_per_day && goal.max_per_day) return `${goal.min_per_day}-${goal.max_per_day}`;
+                    if (goal.min_per_day) return `> ${goal.min_per_day}`;
+                    if (goal.max_per_day) return `< ${goal.max_per_day}`;
+                    return '无限制';
+                };
+
+                onMounted(fetchData);
+
+                return {
+                    apiUrl, tabs, currentTab, backendStatus,
+                    foods, intakes, profile, metrics, goals, analytics, analyticsPeriod,
+                    showIntakeModal, showFoodModal, showBulkImport, intakeForm, foodForm, newGoalName, newNutrientKey, bulkImportJson,
+                    fetchData, fetchAnalytics, submitIntake, deleteIntake, submitFood, deleteFood, editFood, toggleFavorite, 
+                    submitBulkImport, updateProfile, saveGoals, addGoal, resetIntakeForm, resetFoodForm,
+                    filterMainNutrients, formatTime, getStatusColor, getStatusBadge, getGoalText
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

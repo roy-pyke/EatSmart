@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, RootModel, field_validator
 
 DB_PATH = "eatsmart.db"
 
@@ -96,10 +96,9 @@ init_db()
 
 
 # --------- Models ---------
-class NutrientMap(BaseModel):
-    __root__: Dict[str, float]
-
-    @validator("__root__")
+class NutrientMap(RootModel[Dict[str, float]]):
+    @field_validator("root")
+    @classmethod
     def validate_nutrients(cls, v: Dict[str, float]) -> Dict[str, float]:
         if not isinstance(v, dict) or not v:
             raise ValueError("nutrients must be a non-empty object")
@@ -113,7 +112,7 @@ class NutrientMap(BaseModel):
         return cleaned
 
     def dict(self) -> Dict[str, float]:  # type: ignore[override]
-        return self.__root__
+        return self.root
 
 
 class FoodTemplateCreate(BaseModel):
@@ -161,7 +160,8 @@ class ProfilePayload(BaseModel):
     age: Optional[int] = Field(None, gt=0)
     sex: Optional[str] = Field(None, description="male or female")
 
-    @validator("sex")
+    @field_validator("sex")
+    @classmethod
     def validate_sex(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
@@ -176,7 +176,8 @@ class GoalItem(BaseModel):
     min_per_day: Optional[float] = Field(None, ge=0)
     max_per_day: Optional[float] = Field(None, ge=0)
 
-    @validator("nutrient")
+    @field_validator("nutrient")
+    @classmethod
     def validate_nutrient(cls, v: str) -> str:
         v = v.strip()
         if not v:
@@ -729,7 +730,7 @@ def update_goals(goals: List[GoalItem]):
 
 
 @app.get("/analytics/summary")
-def analytics_summary(period: str = Query("week", regex="^(week|month)$"), start: Optional[str] = None, end: Optional[str] = None):
+def analytics_summary(period: str = Query("week", pattern="^(week|month)$"), start: Optional[str] = None, end: Optional[str] = None):
     today = datetime.datetime.utcnow()
     if start:
         start_dt = parse_iso_date(start)
@@ -760,7 +761,7 @@ def analytics_summary(period: str = Query("week", regex="^(week|month)$"), start
 
 
 @app.get("/analytics/export")
-def analytics_export(format: str = Query("csv", regex="^(csv|excel)$"), start: Optional[str] = None, end: Optional[str] = None):
+def analytics_export(format: str = Query("csv", pattern="^(csv|excel)$"), start: Optional[str] = None, end: Optional[str] = None):
     start_dt = parse_iso_date(start) or datetime.datetime.utcnow() - datetime.timedelta(days=29)
     end_dt = parse_iso_date(end) or datetime.datetime.utcnow()
     conn = get_conn()
