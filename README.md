@@ -9,12 +9,15 @@ FastAPI + SQLite backend for logging foods, nutrient intake, user metrics, and w
 - Docs: open `http://localhost:8000/docs`
 
 ## Data model
-- **Food templates**: name, category, base_quantity (g), nutrients_per_100g (normalized), favorite flag.
-- **Food intakes**: grams in g, snapshot of nutrients_per_100g, optional template_id, category, intake_at timestamp.
+- **Meals**: meal_time (Pacific), name/label, contains multiple intake items.
+- **Food templates**: name, category, base_quantity (g as provided), nutrients_per_base (stored as entered), favorite flag. Server computes per-100g on the fly when needed.
+- **Food intakes**: grams in g, snapshot of nutrients_per_100g, optional template_id, meal_id, category, intake_at timestamp.
 - **User profile**: height_cm, weight_kg, optional age/sex for BMI/BMR.
 - **Nutrient goals**: per-nutrient daily min/max targets.
 
 ## Key endpoints (non-exhaustive)
+- `POST /meals` / `GET /meals` / `GET /meals/{id}` / `DELETE /meals/{id}`  
+  Create a meal (Pacific time default) with multiple items (template-based or ad-hoc nutrients).
 - `POST /foods` / `GET /foods` / `PUT /foods/{id}` / `DELETE /foods/{id}`  
   Create/update templates. Accepts nutrients for any base; server normalizes to per 100g.
 - `POST /foods/bulk_import` bulk create templates.
@@ -31,3 +34,4 @@ FastAPI + SQLite backend for logging foods, nutrient intake, user metrics, and w
 - All quantities default to grams; `nutrients_base_quantity` lets you send data for other bases.
 - Records carry timestamps to enable time-range queries.
 - Favorite templates enable quick reuse via `template_id` when creating intakes.
+- All timestamps default to America/Los_Angeles local time; ISO inputs without tz are treated as Pacific.

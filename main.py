@@ -2,13 +2,15 @@ import datetime
 import json
 import sqlite3
 from typing import Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, RootModel, field_validator
 
 DB_PATH = "eatsmart.db"
+LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 
 app = FastAPI(title="EatSmart API", version="0.1.0")
 app.add_middleware(
@@ -21,7 +23,8 @@ app.add_middleware(
 
 
 def now_ts() -> str:
-    return datetime.datetime.utcnow().isoformat()
+    # Use Pacific Time as the canonical local time for all stored timestamps.
+    return datetime.datetime.now(LOCAL_TZ).isoformat()
 
 
 def get_conn() -> sqlite3.Connection:
@@ -49,9 +52,21 @@ def init_db() -> None:
     )
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS meals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            meal_time TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS food_intakes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             template_id INTEGER,
+            meal_id INTEGER,
             name TEXT NOT NULL,
             category TEXT,
             grams REAL NOT NULL,
@@ -59,7 +74,8 @@ def init_db() -> None:
             intake_at TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            FOREIGN KEY(template_id) REFERENCES food_templates(id) ON DELETE SET NULL
+            FOREIGN KEY(template_id) REFERENCES food_templates(id) ON DELETE SET NULL,
+            FOREIGN KEY(meal_id) REFERENCES meals(id) ON DELETE SET NULL
         )
         """
     )
@@ -88,6 +104,14 @@ def init_db() -> None:
         )
         """
     )
+    # Backfill schema changes for existing DBs.
+    def column_exists(table: str, column: str) -> bool:
+        res = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(r[1] == column for r in res)
+
+    if not column_exists("food_intakes", "meal_id"):
+        conn.execute("ALTER TABLE food_intakes ADD COLUMN meal_id INTEGER")
+
     conn.commit()
     conn.close()
 
@@ -143,6 +167,7 @@ class IntakeCreate(BaseModel):
         None, gt=0, description="If nutrients are provided for a non-100g base, specify that base to normalize"
     )
     intake_at: Optional[str] = Field(None, description="ISO timestamp of intake; defaults to now")
+    meal_id: Optional[int] = Field(None, description="Attach to an existing meal")
 
 
 class IntakeUpdate(BaseModel):
@@ -152,6 +177,22 @@ class IntakeUpdate(BaseModel):
     nutrients: Optional[NutrientMap] = None
     nutrients_base_quantity: Optional[float] = Field(None, gt=0)
     intake_at: Optional[str] = None
+    meal_id: Optional[int] = Field(None, description="Attach to an existing meal or null to detach")
+
+
+class MealItem(BaseModel):
+    template_id: Optional[int] = None
+    name: Optional[str] = None
+    category: Optional[str] = None
+    grams: float = Field(..., gt=0)
+    nutrients: Optional[NutrientMap] = None
+    nutrients_base_quantity: Optional[float] = Field(None, gt=0)
+
+
+class MealCreate(BaseModel):
+    name: Optional[str] = Field(None, description="Meal label, e.g., breakfast")
+    meal_time: Optional[str] = Field(None, description="ISO timestamp in local Pacific time; defaults to now")
+    items: List[MealItem]
 
 
 class ProfilePayload(BaseModel):
@@ -197,6 +238,74 @@ def totals_from_normalized(normalized: Dict[str, float], grams: float) -> Dict[s
     return {k: round(v * factor, 4) for k, v in normalized.items()}
 
 
+def resolve_intake(
+    conn: sqlite3.Connection,
+    template_id: Optional[int],
+    name: Optional[str],
+    category: Optional[str],
+    grams: float,
+    nutrients: Optional[Dict[str, float]],
+    nutrients_base_quantity: Optional[float],
+    intake_at: Optional[str],
+) -> Dict:
+    normalized: Dict[str, float]
+    resolved_name = name
+    resolved_category = category
+    if template_id:
+        tpl = fetch_template(conn, template_id)
+        raw = json.loads(tpl["nutrients_json"])
+        normalized = normalize_nutrients(raw, tpl["base_quantity"])
+        resolved_category = resolved_category or tpl["category"]
+        resolved_name = resolved_name or tpl["name"]
+    elif nutrients:
+        base = nutrients_base_quantity or 100.0
+        normalized = normalize_nutrients(nutrients, base)
+        if not resolved_name:
+            raise HTTPException(status_code=400, detail="name is required when not using a template")
+    else:
+        raise HTTPException(status_code=400, detail="Provide template_id or nutrients")
+
+    intake_dt = parse_iso_date(intake_at) or datetime.datetime.now(LOCAL_TZ)
+    intake_at_iso = to_local_iso(intake_dt)
+
+    return {
+        "template_id": template_id,
+        "name": resolved_name,
+        "category": resolved_category,
+        "grams": grams,
+        "normalized": normalized,
+        "intake_at": intake_at_iso,
+    }
+
+
+def insert_intake(
+    conn: sqlite3.Connection,
+    intake_data: Dict,
+    meal_id: Optional[int] = None,
+) -> sqlite3.Row:
+    now = now_ts()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO food_intakes (template_id, meal_id, name, category, grams, normalized_nutrients_json, intake_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            intake_data["template_id"],
+            meal_id,
+            intake_data["name"],
+            intake_data["category"],
+            intake_data["grams"],
+            json.dumps(intake_data["normalized"]),
+            intake_data["intake_at"],
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    return conn.execute("SELECT * FROM food_intakes WHERE id = ?", (cur.lastrowid,)).fetchone()
+
+
 def fetch_template(conn: sqlite3.Connection, template_id: int) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM food_templates WHERE id = ?", (template_id,)).fetchone()
     if not row:
@@ -204,23 +313,42 @@ def fetch_template(conn: sqlite3.Connection, template_id: int) -> sqlite3.Row:
     return row
 
 
+def fetch_meal(conn: sqlite3.Connection, meal_id: int) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM meals WHERE id = ?", (meal_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Meal not found")
+    return row
+
+
 def parse_iso_date(date_str: Optional[str]) -> Optional[datetime.datetime]:
     if date_str is None:
         return None
     try:
-        return datetime.datetime.fromisoformat(date_str)
+        dt = datetime.datetime.fromisoformat(date_str)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid datetime format; use ISO 8601")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=LOCAL_TZ)
+    return dt.astimezone(LOCAL_TZ)
+
+
+def to_local_iso(dt: datetime.datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=LOCAL_TZ)
+    return dt.astimezone(LOCAL_TZ).isoformat()
 
 
 def row_to_food(row: sqlite3.Row) -> Dict:
+    raw = json.loads(row["nutrients_json"])
+    base_qty = row["base_quantity"]
     return {
         "id": row["id"],
         "name": row["name"],
         "category": row["category"],
-        "base_quantity": row["base_quantity"],
+        "base_quantity": base_qty,
         "favorite": bool(row["favorite"]),
-        "nutrients_per_100g": json.loads(row["nutrients_json"]),
+        "nutrients_per_base": raw,
+        "nutrients_per_100g": normalize_nutrients(raw, base_qty),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -232,6 +360,7 @@ def row_to_intake(row: sqlite3.Row) -> Dict:
     return {
         "id": row["id"],
         "template_id": row["template_id"],
+        "meal_id": row["meal_id"],
         "name": row["name"],
         "category": row["category"],
         "grams": grams,
@@ -241,6 +370,19 @@ def row_to_intake(row: sqlite3.Row) -> Dict:
         "normalized_nutrients_per_100g": normalized,
         "totals": totals_from_normalized(normalized, grams),
     }
+
+
+def row_to_meal(row: sqlite3.Row, items: Optional[List[sqlite3.Row]] = None) -> Dict:
+    payload = {
+        "id": row["id"],
+        "name": row["name"],
+        "meal_time": row["meal_time"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+    if items is not None:
+        payload["items"] = [row_to_intake(item) for item in items]
+    return payload
 
 
 def upsert_profile(conn: sqlite3.Connection, payload: ProfilePayload) -> Dict:
@@ -423,7 +565,6 @@ def health() -> Dict[str, str]:
 @app.post("/foods")
 def create_food(payload: FoodTemplateCreate):
     conn = get_conn()
-    normalized = normalize_nutrients(payload.nutrients.dict(), payload.base_quantity)
     now = now_ts()
     cur = conn.cursor()
     cur.execute(
@@ -435,7 +576,7 @@ def create_food(payload: FoodTemplateCreate):
             payload.name,
             payload.category,
             payload.base_quantity,
-            json.dumps(normalized),
+            json.dumps(payload.nutrients.dict()),
             int(payload.favorite),
             now,
             now,
@@ -456,7 +597,6 @@ def bulk_import_food(templates: List[FoodTemplateCreate]):
     cur = conn.cursor()
     rows = []
     for tpl in templates:
-        normalized = normalize_nutrients(tpl.nutrients.dict(), tpl.base_quantity)
         cur.execute(
             """
             INSERT INTO food_templates (name, category, base_quantity, nutrients_json, favorite, created_at, updated_at)
@@ -466,7 +606,7 @@ def bulk_import_food(templates: List[FoodTemplateCreate]):
                 tpl.name,
                 tpl.category,
                 tpl.base_quantity,
-                json.dumps(normalized),
+                json.dumps(tpl.nutrients.dict()),
                 int(tpl.favorite),
                 now,
                 now,
@@ -512,7 +652,7 @@ def update_food(template_id: int, payload: FoodTemplateUpdate):
     if payload.base_quantity is not None:
         base_quantity = payload.base_quantity
     if payload.nutrients is not None:
-        nutrients_json = json.dumps(normalize_nutrients(payload.nutrients.dict(), base_quantity))
+        nutrients_json = json.dumps(payload.nutrients.dict())
     now = now_ts()
     conn.execute(
         """
@@ -554,46 +694,19 @@ def delete_food(template_id: int):
 @app.post("/intakes")
 def create_intake(payload: IntakeCreate):
     conn = get_conn()
-    normalized: Dict[str, float]
-    category: Optional[str] = payload.category
-    name = payload.name
-    if payload.template_id:
-        tpl = fetch_template(conn, payload.template_id)
-        normalized = json.loads(tpl["nutrients_json"])
-        category = category or tpl["category"]
-        name = name or tpl["name"]
-    elif payload.nutrients:
-        base = payload.nutrients_base_quantity or 100.0
-        normalized = normalize_nutrients(payload.nutrients.dict(), base)
-        if not name:
-            raise HTTPException(status_code=400, detail="name is required when not using a template")
-    else:
-        raise HTTPException(status_code=400, detail="Provide template_id or nutrients")
-
-    intake_at = payload.intake_at or now_ts()
-    # Validate intake_at
-    parse_iso_date(intake_at)
-
-    now = now_ts()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO food_intakes (template_id, name, category, grams, normalized_nutrients_json, intake_at, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            payload.template_id,
-            name,
-            category,
-            payload.grams,
-            json.dumps(normalized),
-            intake_at,
-            now,
-            now,
-        ),
+    if payload.meal_id is not None:
+        fetch_meal(conn, payload.meal_id)
+    intake_data = resolve_intake(
+        conn=conn,
+        template_id=payload.template_id,
+        name=payload.name,
+        category=payload.category,
+        grams=payload.grams,
+        nutrients=payload.nutrients.dict() if payload.nutrients else None,
+        nutrients_base_quantity=payload.nutrients_base_quantity,
+        intake_at=payload.intake_at,
     )
-    conn.commit()
-    new_row = conn.execute("SELECT * FROM food_intakes WHERE id = ?", (cur.lastrowid,)).fetchone()
+    new_row = insert_intake(conn, intake_data, meal_id=payload.meal_id)
     conn.close()
     return row_to_intake(new_row)
 
@@ -607,13 +720,13 @@ def list_intakes(start: Optional[str] = None, end: Optional[str] = None):
     params: List = []
     if start_dt and end_dt:
         query += " WHERE intake_at BETWEEN ? AND ?"
-        params.extend([start_dt.isoformat(), end_dt.isoformat()])
+        params.extend([to_local_iso(start_dt), to_local_iso(end_dt)])
     elif start_dt:
         query += " WHERE intake_at >= ?"
-        params.append(start_dt.isoformat())
+        params.append(to_local_iso(start_dt))
     elif end_dt:
         query += " WHERE intake_at <= ?"
-        params.append(end_dt.isoformat())
+        params.append(to_local_iso(end_dt))
     query += " ORDER BY intake_at DESC"
     rows = conn.execute(query, params).fetchall()
     conn.close()
@@ -644,6 +757,7 @@ def update_intake(intake_id: int, payload: IntakeUpdate):
     intake_at = row["intake_at"]
     name = row["name"]
     category = row["category"]
+    meal_id = row["meal_id"]
 
     if payload.grams is not None:
         grams = payload.grams
@@ -651,18 +765,23 @@ def update_intake(intake_id: int, payload: IntakeUpdate):
         base = payload.nutrients_base_quantity or 100.0
         normalized = normalize_nutrients(payload.nutrients.dict(), base)
     if payload.intake_at is not None:
-        parse_iso_date(payload.intake_at)
-        intake_at = payload.intake_at
+        intake_at = to_local_iso(parse_iso_date(payload.intake_at))
     if payload.name is not None:
         name = payload.name
     if payload.category is not None:
         category = payload.category
+    if payload.meal_id is not None:
+        if payload.meal_id:
+            fetch_meal(conn, payload.meal_id)
+            meal_id = payload.meal_id
+        else:
+            meal_id = None
 
     now = now_ts()
     conn.execute(
         """
         UPDATE food_intakes
-        SET grams = ?, normalized_nutrients_json = ?, intake_at = ?, name = ?, category = ?, updated_at = ?
+        SET grams = ?, normalized_nutrients_json = ?, intake_at = ?, name = ?, category = ?, meal_id = ?, updated_at = ?
         WHERE id = ?
         """,
         (
@@ -671,6 +790,7 @@ def update_intake(intake_id: int, payload: IntakeUpdate):
             intake_at,
             name,
             category,
+            meal_id,
             now,
             intake_id,
         ),
@@ -692,6 +812,88 @@ def delete_intake(intake_id: int):
     conn.commit()
     conn.close()
     return {"deleted": intake_id}
+
+
+# --------- Meals ---------
+@app.post("/meals")
+def create_meal(payload: MealCreate):
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="items cannot be empty")
+    conn = get_conn()
+    meal_time_dt = parse_iso_date(payload.meal_time) or datetime.datetime.now(LOCAL_TZ)
+    meal_time = to_local_iso(meal_time_dt)
+    now = now_ts()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO meals (name, meal_time, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (payload.name, meal_time, now, now),
+    )
+    meal_id = cur.lastrowid
+    for item in payload.items:
+        intake_data = resolve_intake(
+            conn=conn,
+            template_id=item.template_id,
+            name=item.name,
+            category=item.category,
+            grams=item.grams,
+            nutrients=item.nutrients.dict() if item.nutrients else None,
+            nutrients_base_quantity=item.nutrients_base_quantity,
+            intake_at=meal_time,
+        )
+        insert_intake(conn, intake_data, meal_id=meal_id)
+    meal_row = conn.execute("SELECT * FROM meals WHERE id = ?", (meal_id,)).fetchone()
+    items = conn.execute("SELECT * FROM food_intakes WHERE meal_id = ? ORDER BY created_at", (meal_id,)).fetchall()
+    conn.close()
+    return row_to_meal(meal_row, items)
+
+
+@app.get("/meals")
+def list_meals(start: Optional[str] = None, end: Optional[str] = None):
+    start_dt = parse_iso_date(start)
+    end_dt = parse_iso_date(end)
+    conn = get_conn()
+    query = "SELECT * FROM meals"
+    params: List = []
+    if start_dt and end_dt:
+        query += " WHERE meal_time BETWEEN ? AND ?"
+        params.extend([to_local_iso(start_dt), to_local_iso(end_dt)])
+    elif start_dt:
+        query += " WHERE meal_time >= ?"
+        params.append(to_local_iso(start_dt))
+    elif end_dt:
+        query += " WHERE meal_time <= ?"
+        params.append(to_local_iso(end_dt))
+    query += " ORDER BY meal_time DESC"
+    meals = conn.execute(query, params).fetchall()
+    result = []
+    for meal in meals:
+        items = conn.execute("SELECT * FROM food_intakes WHERE meal_id = ? ORDER BY created_at", (meal["id"],)).fetchall()
+        result.append(row_to_meal(meal, items))
+    conn.close()
+    return result
+
+
+@app.get("/meals/{meal_id}")
+def get_meal(meal_id: int):
+    conn = get_conn()
+    meal = fetch_meal(conn, meal_id)
+    items = conn.execute("SELECT * FROM food_intakes WHERE meal_id = ? ORDER BY created_at", (meal_id,)).fetchall()
+    conn.close()
+    return row_to_meal(meal, items)
+
+
+@app.delete("/meals/{meal_id}")
+def delete_meal(meal_id: int):
+    conn = get_conn()
+    fetch_meal(conn, meal_id)
+    conn.execute("DELETE FROM food_intakes WHERE meal_id = ?", (meal_id,))
+    conn.execute("DELETE FROM meals WHERE id = ?", (meal_id,))
+    conn.commit()
+    conn.close()
+    return {"deleted": meal_id, "intakes_deleted": True}
 
 
 @app.get("/user/profile")
@@ -731,7 +933,7 @@ def update_goals(goals: List[GoalItem]):
 
 @app.get("/analytics/summary")
 def analytics_summary(period: str = Query("week", pattern="^(week|month)$"), start: Optional[str] = None, end: Optional[str] = None):
-    today = datetime.datetime.utcnow()
+    today = datetime.datetime.now(LOCAL_TZ)
     if start:
         start_dt = parse_iso_date(start)
     else:
@@ -745,7 +947,7 @@ def analytics_summary(period: str = Query("week", pattern="^(week|month)$"), sta
     conn = get_conn()
     rows = conn.execute(
         "SELECT * FROM food_intakes WHERE intake_at BETWEEN ? AND ? ORDER BY intake_at",
-        (start_dt.isoformat(), end_dt.isoformat()),
+        (to_local_iso(start_dt), to_local_iso(end_dt)),
     ).fetchall()
     goals = fetch_goals(conn)
     summary = aggregate_intakes(rows, goals, start_dt, end_dt)
@@ -753,7 +955,7 @@ def analytics_summary(period: str = Query("week", pattern="^(week|month)$"), sta
     metrics = compute_bmi_bmr(profile)
     conn.close()
     return {
-        "period": {"start": start_dt.isoformat(), "end": end_dt.isoformat(), "type": period},
+        "period": {"start": to_local_iso(start_dt), "end": to_local_iso(end_dt), "type": period},
         "summary": summary,
         "profile_metrics": metrics,
         "sample_size": len(rows),
@@ -762,12 +964,12 @@ def analytics_summary(period: str = Query("week", pattern="^(week|month)$"), sta
 
 @app.get("/analytics/export")
 def analytics_export(format: str = Query("csv", pattern="^(csv|excel)$"), start: Optional[str] = None, end: Optional[str] = None):
-    start_dt = parse_iso_date(start) or datetime.datetime.utcnow() - datetime.timedelta(days=29)
-    end_dt = parse_iso_date(end) or datetime.datetime.utcnow()
+    start_dt = parse_iso_date(start) or datetime.datetime.now(LOCAL_TZ) - datetime.timedelta(days=29)
+    end_dt = parse_iso_date(end) or datetime.datetime.now(LOCAL_TZ)
     conn = get_conn()
     rows = conn.execute(
         "SELECT * FROM food_intakes WHERE intake_at BETWEEN ? AND ? ORDER BY intake_at",
-        (start_dt.isoformat(), end_dt.isoformat()),
+        (to_local_iso(start_dt), to_local_iso(end_dt)),
     ).fetchall()
     csv_data, header = export_csv(rows)
     conn.close()
@@ -784,12 +986,12 @@ def analytics_export(format: str = Query("csv", pattern="^(csv|excel)$"), start:
 
 @app.get("/analytics/daily-breakdown")
 def daily_breakdown(start: Optional[str] = None, end: Optional[str] = None):
-    start_dt = parse_iso_date(start) or datetime.datetime.utcnow() - datetime.timedelta(days=6)
-    end_dt = parse_iso_date(end) or datetime.datetime.utcnow()
+    start_dt = parse_iso_date(start) or datetime.datetime.now(LOCAL_TZ) - datetime.timedelta(days=6)
+    end_dt = parse_iso_date(end) or datetime.datetime.now(LOCAL_TZ)
     conn = get_conn()
     rows = conn.execute(
         "SELECT * FROM food_intakes WHERE intake_at BETWEEN ? AND ? ORDER BY intake_at",
-        (start_dt.isoformat(), end_dt.isoformat()),
+        (to_local_iso(start_dt), to_local_iso(end_dt)),
     ).fetchall()
     breakdown = {}
     for row in rows:
@@ -800,4 +1002,4 @@ def daily_breakdown(start: Optional[str] = None, end: Optional[str] = None):
         for k, v in totals.items():
             bucket[k] = bucket.get(k, 0.0) + v
     conn.close()
-    return {"start": start_dt.isoformat(), "end": end_dt.isoformat(), "days": breakdown}
+    return {"start": to_local_iso(start_dt), "end": to_local_iso(end_dt), "days": breakdown}
