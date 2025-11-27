@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+*$py.class
+
+# Virtual env
+.venv/
+venv/
+ENV/
+
+# Editors/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local data
+*.db
+eatsmart.db
+*.sqlite
+
+# Logs / cache
+*.log
+*.sqlite-wal
+*.sqlite-shm
+.cache/
+.pytest_cache/
+
+# Env/config
+.env
+.python-version
