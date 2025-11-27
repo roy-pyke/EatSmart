@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, RootModel, field_validator
 
 DB_PATH = "eatsmart.db"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+DAY_TYPES = {"rest", "training"}
 
 app = FastAPI(title="EatSmart API", version="0.1.0")
 app.add_middleware(
@@ -55,6 +56,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS meals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
+            day_type TEXT DEFAULT 'rest',
             meal_time TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -96,9 +98,33 @@ def init_db() -> None:
         """
         CREATE TABLE IF NOT EXISTS nutrient_goals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nutrient TEXT NOT NULL UNIQUE,
+            nutrient TEXT NOT NULL,
+            day_type TEXT NOT NULL DEFAULT 'rest',
             min_per_day REAL,
             max_per_day REAL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(nutrient, day_type)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS day_types (
+            date TEXT PRIMARY KEY,
+            day_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS weight_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            value_kg REAL NOT NULL,
+            note TEXT,
+            logged_at TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -111,6 +137,11 @@ def init_db() -> None:
 
     if not column_exists("food_intakes", "meal_id"):
         conn.execute("ALTER TABLE food_intakes ADD COLUMN meal_id INTEGER")
+    if not column_exists("meals", "day_type"):
+        conn.execute("ALTER TABLE meals ADD COLUMN day_type TEXT DEFAULT 'rest'")
+    if not column_exists("nutrient_goals", "day_type"):
+        conn.execute("ALTER TABLE nutrient_goals ADD COLUMN day_type TEXT DEFAULT 'rest'")
+        conn.execute("UPDATE nutrient_goals SET day_type = 'rest' WHERE day_type IS NULL")
 
     conn.commit()
     conn.close()
@@ -193,6 +224,19 @@ class MealCreate(BaseModel):
     name: Optional[str] = Field(None, description="Meal label, e.g., breakfast")
     meal_time: Optional[str] = Field(None, description="ISO timestamp in local Pacific time; defaults to now")
     items: List[MealItem]
+    day_type: Optional[str] = Field(None, description="rest or training")
+
+
+class WeightCreate(BaseModel):
+    value_kg: float = Field(..., gt=0)
+    logged_at: Optional[str] = Field(None, description="ISO timestamp in local Pacific time; defaults to now")
+    note: Optional[str] = None
+
+
+class WeightUpdate(BaseModel):
+    value_kg: Optional[float] = Field(None, gt=0)
+    logged_at: Optional[str] = None
+    note: Optional[str] = None
 
 
 class ProfilePayload(BaseModel):
@@ -216,6 +260,7 @@ class GoalItem(BaseModel):
     nutrient: str
     min_per_day: Optional[float] = Field(None, ge=0)
     max_per_day: Optional[float] = Field(None, ge=0)
+    day_type: str = Field("rest", description="rest or training")
 
     @field_validator("nutrient")
     @classmethod
@@ -223,6 +268,14 @@ class GoalItem(BaseModel):
         v = v.strip()
         if not v:
             raise ValueError("nutrient name required")
+        return v
+
+    @field_validator("day_type")
+    @classmethod
+    def validate_day_type(cls, v: str) -> str:
+        v = v.lower()
+        if v not in DAY_TYPES:
+            raise ValueError("day_type must be 'rest' or 'training'")
         return v
 
 
@@ -320,6 +373,42 @@ def fetch_meal(conn: sqlite3.Connection, meal_id: int) -> sqlite3.Row:
     return row
 
 
+def normalize_day_type(day_type: Optional[str]) -> str:
+    if day_type is None:
+        return "rest"
+    day_type = day_type.lower()
+    if day_type not in DAY_TYPES:
+        raise HTTPException(status_code=400, detail="day_type must be 'rest' or 'training'")
+    return day_type
+
+
+def upsert_day_type(conn: sqlite3.Connection, day: str, day_type: str) -> None:
+    now = now_ts()
+    conn.execute(
+        """
+        INSERT INTO day_types (date, day_type, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(date) DO UPDATE SET day_type = excluded.day_type, updated_at = excluded.updated_at
+        """,
+        (day, day_type, now, now),
+    )
+    conn.commit()
+
+
+def fetch_day_types(conn: sqlite3.Connection, start: datetime.date, end: datetime.date) -> Dict[str, str]:
+    rows = conn.execute(
+        "SELECT date, day_type FROM day_types WHERE date BETWEEN ? AND ?",
+        (start.isoformat(), end.isoformat()),
+    ).fetchall()
+    mapping = {row["date"]: row["day_type"] for row in rows}
+    # Fill missing days as rest for the range
+    day = start
+    while day <= end:
+        mapping.setdefault(day.isoformat(), "rest")
+        day += datetime.timedelta(days=1)
+    return mapping
+
+
 def parse_iso_date(date_str: Optional[str]) -> Optional[datetime.datetime]:
     if date_str is None:
         return None
@@ -376,6 +465,7 @@ def row_to_meal(row: sqlite3.Row, items: Optional[List[sqlite3.Row]] = None) -> 
     payload = {
         "id": row["id"],
         "name": row["name"],
+        "day_type": row["day_type"],
         "meal_time": row["meal_time"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -383,6 +473,17 @@ def row_to_meal(row: sqlite3.Row, items: Optional[List[sqlite3.Row]] = None) -> 
     if items is not None:
         payload["items"] = [row_to_intake(item) for item in items]
     return payload
+
+
+def row_to_weight(row: sqlite3.Row) -> Dict:
+    return {
+        "id": row["id"],
+        "value_kg": row["value_kg"],
+        "note": row["note"],
+        "logged_at": row["logged_at"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
 
 
 def upsert_profile(conn: sqlite3.Connection, payload: ProfilePayload) -> Dict:
@@ -427,9 +528,9 @@ def row_to_profile(row: Optional[sqlite3.Row]) -> Dict:
     }
 
 
-def compute_bmi_bmr(profile: Dict) -> Dict:
+def compute_bmi_bmr(profile: Dict, weight_override: Optional[float] = None) -> Dict:
     height_cm = profile.get("height_cm")
-    weight_kg = profile.get("weight_kg")
+    weight_kg = weight_override if weight_override is not None else profile.get("weight_kg")
     age = profile.get("age")
     sex = profile.get("sex")
     bmi = None
@@ -446,69 +547,131 @@ def compute_bmi_bmr(profile: Dict) -> Dict:
     return {"bmi": bmi, "bmr": bmr}
 
 
-def merge_goals(conn: sqlite3.Connection, goals: List[GoalItem]) -> List[Dict]:
+def fetch_latest_weight(conn: sqlite3.Connection) -> Optional[Dict]:
+    row = conn.execute(
+        "SELECT * FROM weight_logs ORDER BY logged_at DESC LIMIT 1"
+    ).fetchone()
+    if not row:
+        return None
+    return row_to_weight(row)
+
+
+def weight_stats(conn: sqlite3.Connection, start: datetime.datetime, end: datetime.datetime) -> Dict:
+    rows = conn.execute(
+        "SELECT * FROM weight_logs WHERE logged_at BETWEEN ? AND ? ORDER BY logged_at",
+        (to_local_iso(start), to_local_iso(end)),
+    ).fetchall()
+    if not rows:
+        return {"count": 0, "latest": None, "min": None, "max": None, "avg": None, "delta": None}
+    values = [row["value_kg"] for row in rows]
+    latest = row_to_weight(rows[-1])
+    delta = round(values[-1] - values[0], 3) if len(values) > 1 else 0.0
+    return {
+        "count": len(rows),
+        "latest": latest,
+        "min": round(min(values), 3),
+        "max": round(max(values), 3),
+        "avg": round(sum(values) / len(values), 3),
+        "delta": delta,
+    }
+
+
+def merge_goals(conn: sqlite3.Connection, goals: List[GoalItem]) -> Dict[str, Dict[str, Dict[str, Optional[float]]]]:
     now = now_ts()
-    rows = []
     for goal in goals:
+        day_type = normalize_day_type(goal.day_type)
         existing = conn.execute(
-            "SELECT * FROM nutrient_goals WHERE nutrient = ?", (goal.nutrient,)
+            "SELECT id FROM nutrient_goals WHERE nutrient = ? AND day_type = ?",
+            (goal.nutrient, day_type),
         ).fetchone()
         if existing:
             conn.execute(
                 """
                 UPDATE nutrient_goals
-                SET min_per_day = ?, max_per_day = ?, updated_at = ?
-                WHERE nutrient = ?
+                SET min_per_day = ?, max_per_day = ?, updated_at = ?, day_type = ?
+                WHERE nutrient = ? AND day_type = ?
                 """,
-                (goal.min_per_day, goal.max_per_day, now, goal.nutrient),
+                (goal.min_per_day, goal.max_per_day, now, day_type, goal.nutrient, day_type),
             )
         else:
             conn.execute(
                 """
-                INSERT INTO nutrient_goals (nutrient, min_per_day, max_per_day, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO nutrient_goals (nutrient, day_type, min_per_day, max_per_day, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (goal.nutrient, goal.min_per_day, goal.max_per_day, now, now),
-            ) 
-        rows.append(goal.nutrient)
+                (goal.nutrient, day_type, goal.min_per_day, goal.max_per_day, now, now),
+            )
     conn.commit()
-    if not rows:
-        return []
-    stored = conn.execute(
-        "SELECT nutrient, min_per_day, max_per_day, created_at, updated_at FROM nutrient_goals WHERE nutrient IN (%s)" % ",".join(
-            ["?"] * len(rows)
-        ),
-        rows,
-    ).fetchall()
-    return [dict(r) for r in stored]
+    return fetch_goals(conn)
 
 
-def fetch_goals(conn: sqlite3.Connection) -> Dict[str, Dict[str, Optional[float]]]:
-    res = {}
-    for row in conn.execute("SELECT nutrient, min_per_day, max_per_day FROM nutrient_goals"):
-        res[row["nutrient"]] = {"min_per_day": row["min_per_day"], "max_per_day": row["max_per_day"]}
+def fetch_goals(conn: sqlite3.Connection) -> Dict[str, Dict[str, Dict[str, Optional[float]]]]:
+    res: Dict[str, Dict[str, Dict[str, Optional[float]]]] = {dt: {} for dt in DAY_TYPES}
+    for row in conn.execute("SELECT nutrient, day_type, min_per_day, max_per_day FROM nutrient_goals"):
+        res.setdefault(row["day_type"], {})[row["nutrient"]] = {
+            "min_per_day": row["min_per_day"],
+            "max_per_day": row["max_per_day"],
+        }
     return res
 
 
-def aggregate_intakes(rows: List[sqlite3.Row], goals: Dict[str, Dict[str, Optional[float]]], start: datetime.datetime, end: datetime.datetime) -> Dict:
+def aggregate_intakes(
+    rows: List[sqlite3.Row],
+    goals_by_type: Dict[str, Dict[str, Dict[str, Optional[float]]]],
+    day_types: Dict[str, str],
+    start: datetime.datetime,
+    end: datetime.datetime,
+) -> Dict:
     nutrient_totals: Dict[str, float] = {}
     category_totals: Dict[str, Dict[str, float]] = {}
-    days = max((end.date() - start.date()).days + 1, 1)
+    daily_totals: Dict[str, Dict[str, float]] = {}
+    active_days: set[str] = set()
+
     for row in rows:
         normalized = json.loads(row["normalized_nutrients_json"])
         totals = totals_from_normalized(normalized, row["grams"])
+        day = row["intake_at"][:10]
+        active_days.add(day)
+        daily_bucket = daily_totals.setdefault(day, {})
         for nutrient, val in totals.items():
             nutrient_totals[nutrient] = nutrient_totals.get(nutrient, 0.0) + val
+            daily_bucket[nutrient] = daily_bucket.get(nutrient, 0.0) + val
         cat = row["category"] or "uncategorized"
         bucket = category_totals.setdefault(cat, {})
         for nutrient, val in totals.items():
             bucket[nutrient] = bucket.get(nutrient, 0.0) + val
+
+    # Average goals per nutrient across the days in range, respecting day_type
+    min_sum: Dict[str, float] = {}
+    min_count: Dict[str, int] = {}
+    max_sum: Dict[str, float] = {}
+    max_count: Dict[str, int] = {}
+
+    day_cursor = start.date()
+    while day_cursor <= end.date():
+        day_str = day_cursor.isoformat()
+        day_type = day_types.get(day_str, "rest")
+        goal_map = goals_by_type.get(day_type, {})
+        for nutrient, goal in goal_map.items():
+            if goal.get("min_per_day") is not None:
+                min_sum[nutrient] = min_sum.get(nutrient, 0.0) + goal["min_per_day"]  # type: ignore[arg-type]
+                min_count[nutrient] = min_count.get(nutrient, 0) + 1
+            if goal.get("max_per_day") is not None:
+                max_sum[nutrient] = max_sum.get(nutrient, 0.0) + goal["max_per_day"]  # type: ignore[arg-type]
+                max_count[nutrient] = max_count.get(nutrient, 0) + 1
+        day_cursor += datetime.timedelta(days=1)
+
+    avg_goal_min = {k: min_sum[k] / min_count[k] for k in min_sum}
+    avg_goal_max = {k: max_sum[k] / max_count[k] for k in max_sum}
+
+    days_for_avg = max(len(active_days), 1)
+    period_days = max((end.date() - start.date()).days + 1, 1)
+
     nutrient_summary = {}
     for nutrient, total in nutrient_totals.items():
-        avg = total / days
-        goal = goals.get(nutrient, {})
-        min_goal = goal.get("min_per_day")
-        max_goal = goal.get("max_per_day")
+        avg = total / days_for_avg
+        min_goal = avg_goal_min.get(nutrient)
+        max_goal = avg_goal_max.get(nutrient)
         status = "ok"
         if min_goal is not None and avg < min_goal:
             status = "low"
@@ -517,15 +680,17 @@ def aggregate_intakes(rows: List[sqlite3.Row], goals: Dict[str, Dict[str, Option
         nutrient_summary[nutrient] = {
             "total": round(total, 3),
             "daily_avg": round(avg, 3),
-            "goal": goal,
+            "goal": {"min_per_day": min_goal, "max_per_day": max_goal},
             "status": status,
             "percent_of_min": round(avg / min_goal * 100, 1) if min_goal else None,
             "percent_of_max": round(avg / max_goal * 100, 1) if max_goal else None,
         }
     return {
-        "period_days": days,
+        "period_days": period_days,
+        "active_days": len(active_days),
         "totals": nutrient_summary,
         "by_category": {cat: {k: round(v, 3) for k, v in nutrients.items()} for cat, nutrients in category_totals.items()},
+        "daily_totals": {day: {k: round(v, 3) for k, v in vals.items()} for day, vals in daily_totals.items()},
     }
 
 
@@ -822,16 +987,19 @@ def create_meal(payload: MealCreate):
     conn = get_conn()
     meal_time_dt = parse_iso_date(payload.meal_time) or datetime.datetime.now(LOCAL_TZ)
     meal_time = to_local_iso(meal_time_dt)
+    day_type = normalize_day_type(payload.day_type)
     now = now_ts()
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO meals (name, meal_time, created_at, updated_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO meals (name, day_type, meal_time, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (payload.name, meal_time, now, now),
+        (payload.name, day_type, meal_time, now, now),
     )
     meal_id = cur.lastrowid
+    # Persist the day's type so analytics can use the right goal set.
+    upsert_day_type(conn, meal_time_dt.date().isoformat(), day_type)
     for item in payload.items:
         intake_data = resolve_intake(
             conn=conn,
@@ -896,23 +1064,110 @@ def delete_meal(meal_id: int):
     return {"deleted": meal_id, "intakes_deleted": True}
 
 
+# --------- Weight Logs ---------
+@app.post("/weights")
+def create_weight(payload: WeightCreate):
+    conn = get_conn()
+    logged_at = to_local_iso(parse_iso_date(payload.logged_at) or datetime.datetime.now(LOCAL_TZ))
+    now = now_ts()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO weight_logs (value_kg, note, logged_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (payload.value_kg, payload.note, logged_at, now, now),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM weight_logs WHERE id = ?", (cur.lastrowid,)).fetchone()
+    conn.close()
+    return row_to_weight(row)
+
+
+@app.get("/weights")
+def list_weights(start: Optional[str] = None, end: Optional[str] = None):
+    start_dt = parse_iso_date(start) or datetime.datetime.now(LOCAL_TZ) - datetime.timedelta(days=30)
+    end_dt = parse_iso_date(end) or datetime.datetime.now(LOCAL_TZ)
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM weight_logs WHERE logged_at BETWEEN ? AND ? ORDER BY logged_at DESC",
+        (to_local_iso(start_dt), to_local_iso(end_dt)),
+    ).fetchall()
+    conn.close()
+    return [row_to_weight(r) for r in rows]
+
+
+@app.put("/weights/{weight_id}")
+def update_weight(weight_id: int, payload: WeightUpdate):
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM weight_logs WHERE id = ?", (weight_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Weight entry not found")
+    value_kg = payload.value_kg if payload.value_kg is not None else row["value_kg"]
+    note = payload.note if payload.note is not None else row["note"]
+    logged_at = row["logged_at"]
+    if payload.logged_at is not None:
+        logged_at = to_local_iso(parse_iso_date(payload.logged_at))
+    now = now_ts()
+    conn.execute(
+        """
+        UPDATE weight_logs
+        SET value_kg = ?, note = ?, logged_at = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (value_kg, note, logged_at, now, weight_id),
+    )
+    conn.commit()
+    updated = conn.execute("SELECT * FROM weight_logs WHERE id = ?", (weight_id,)).fetchone()
+    conn.close()
+    return row_to_weight(updated)
+
+
+@app.delete("/weights/{weight_id}")
+def delete_weight(weight_id: int):
+    conn = get_conn()
+    row = conn.execute("SELECT id FROM weight_logs WHERE id = ?", (weight_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Weight entry not found")
+    conn.execute("DELETE FROM weight_logs WHERE id = ?", (weight_id,))
+    conn.commit()
+    conn.close()
+    return {"deleted": weight_id}
+
+
+@app.get("/weights/summary")
+def weight_summary(start: Optional[str] = None, end: Optional[str] = None):
+    start_dt = parse_iso_date(start) or datetime.datetime.now(LOCAL_TZ) - datetime.timedelta(days=30)
+    end_dt = parse_iso_date(end) or datetime.datetime.now(LOCAL_TZ)
+    conn = get_conn()
+    stats = weight_stats(conn, start_dt, end_dt)
+    conn.close()
+    return stats
+
+
 @app.get("/user/profile")
 def get_profile():
     conn = get_conn()
     row = conn.execute("SELECT * FROM user_profile WHERE id = 1").fetchone()
     profile = row_to_profile(row)
-    metrics = compute_bmi_bmr(profile)
+    latest_weight = fetch_latest_weight(conn)
+    effective_weight = latest_weight["value_kg"] if latest_weight else None
+    metrics = compute_bmi_bmr(profile, weight_override=effective_weight)
     conn.close()
-    return {"profile": profile, "metrics": metrics}
+    return {"profile": profile, "metrics": metrics, "latest_weight": latest_weight}
 
 
 @app.put("/user/profile")
 def update_profile(payload: ProfilePayload):
     conn = get_conn()
     profile = upsert_profile(conn, payload)
-    metrics = compute_bmi_bmr(profile)
+    latest_weight = fetch_latest_weight(conn)
+    effective_weight = latest_weight["value_kg"] if latest_weight else None
+    metrics = compute_bmi_bmr(profile, weight_override=effective_weight)
     conn.close()
-    return {"profile": profile, "metrics": metrics}
+    return {"profile": profile, "metrics": metrics, "latest_weight": latest_weight}
 
 
 @app.get("/user/goals")
@@ -932,17 +1187,20 @@ def update_goals(goals: List[GoalItem]):
 
 
 @app.get("/analytics/summary")
-def analytics_summary(period: str = Query("week", pattern="^(week|month)$"), start: Optional[str] = None, end: Optional[str] = None):
-    today = datetime.datetime.now(LOCAL_TZ)
+def analytics_summary(period: str = Query("week", pattern="^(day|week|month)$"), start: Optional[str] = None, end: Optional[str] = None):
+    now_local = datetime.datetime.now(LOCAL_TZ)
     if start:
         start_dt = parse_iso_date(start)
     else:
-        delta = datetime.timedelta(days=6 if period == "week" else 29)
-        start_dt = today - delta
+        if period == "day":
+            start_dt = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        else:
+            delta = datetime.timedelta(days=6 if period == "week" else 29)
+            start_dt = now_local - delta
     if end:
         end_dt = parse_iso_date(end)
     else:
-        end_dt = today
+        end_dt = now_local
 
     conn = get_conn()
     rows = conn.execute(
@@ -950,15 +1208,21 @@ def analytics_summary(period: str = Query("week", pattern="^(week|month)$"), sta
         (to_local_iso(start_dt), to_local_iso(end_dt)),
     ).fetchall()
     goals = fetch_goals(conn)
-    summary = aggregate_intakes(rows, goals, start_dt, end_dt)
+    day_types = fetch_day_types(conn, start_dt.date(), end_dt.date())
+    summary = aggregate_intakes(rows, goals, day_types, start_dt, end_dt)
     profile = row_to_profile(conn.execute("SELECT * FROM user_profile WHERE id = 1").fetchone())
-    metrics = compute_bmi_bmr(profile)
+    latest_weight = fetch_latest_weight(conn)
+    effective_weight = latest_weight["value_kg"] if latest_weight else None
+    metrics = compute_bmi_bmr(profile, weight_override=effective_weight)
+    weights = weight_stats(conn, start_dt, end_dt)
     conn.close()
     return {
         "period": {"start": to_local_iso(start_dt), "end": to_local_iso(end_dt), "type": period},
         "summary": summary,
         "profile_metrics": metrics,
         "sample_size": len(rows),
+        "day_types": day_types,
+        "weight_stats": weights,
     }
 
 

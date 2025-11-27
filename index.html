@@ -46,6 +46,7 @@
                     <h2 class="text-3xl font-bold text-gray-800">营养概览</h2>
                     <div class="flex gap-2">
                         <select v-model="analyticsPeriod" @change="fetchAnalytics" class="border rounded p-2 bg-white shadow-sm">
+                            <option value="day">今日 (Day)</option>
                             <option value="week">本周 (Week)</option>
                             <option value="month">本月 (Month)</option>
                         </select>
@@ -55,7 +56,7 @@
                     </div>
                 </header>
 
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                     <div class="bg-white p-6 rounded-lg shadow border-l-4 border-blue-500">
                         <h3 class="text-gray-500 text-sm font-semibold">BMI 指数</h3>
                         <p class="text-3xl font-bold mt-2 text-gray-800">{{ metrics.bmi || '--' }}</p>
@@ -67,15 +68,23 @@
                         <span class="text-xs text-gray-400">仅供参考</span>
                     </div>
                     <div class="bg-white p-6 rounded-lg shadow border-l-4 border-green-500">
+                        <h3 class="text-gray-500 text-sm font-semibold">今日摄入 (Pacific)</h3>
+                        <p class="text-xl font-bold mt-2 text-gray-800">Calories: {{ Math.round(todayTotals.Calories || 0) }} kcal</p>
+                        <p class="text-sm text-gray-700">Protein: {{ Math.round(todayTotals.Protein || 0) }} g</p>
+                        <span class="text-xs text-gray-400">按美西当天汇总</span>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow border-l-4 border-amber-500">
                         <h3 class="text-gray-500 text-sm font-semibold">记录样本</h3>
-                        <p class="text-3xl font-bold mt-2 text-gray-800">{{ analytics.sample_size || 0 }} <span class="text-sm font-normal text-gray-500">items</span></p>
+                        <p class="text-3xl font-bold mt-2 text-gray-800">{{ analyticsMeta.sample_size || 0 }} <span class="text-sm font-normal text-gray-500">items</span></p>
                         <span class="text-xs text-gray-400">所选周期内</span>
                     </div>
                 </div>
 
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <div class="bg-white p-6 rounded-lg shadow">
-                        <h3 class="text-lg font-bold mb-4 text-gray-700">目标达成度 (日均)</h3>
+                        <h3 class="text-lg font-bold mb-4 text-gray-700">目标达成度 (日均)
+                            <span class="text-xs text-gray-400 ml-2">基于有记录的 {{ analytics.active_days || 0 }} 天</span>
+                        </h3>
                         <div class="space-y-5">
                             <div v-for="(data, nutrient) in analytics.totals" :key="nutrient" class="border-b border-gray-100 pb-3">
                                 <div class="flex justify-between items-end mb-2">
@@ -127,6 +136,9 @@
                                 <h3 class="font-bold text-lg text-gray-800">
                                     {{ meal.name || '未命名餐点' }}
                                     <span class="text-xs font-normal text-gray-500 ml-2">{{ formatTime(meal.meal_time) }}</span>
+                                    <span class="ml-2 px-2 py-0.5 text-xs rounded border" :class="meal.day_type === 'training' ? 'bg-orange-50 text-orange-700 border-orange-200' : 'bg-green-50 text-green-700 border-green-200'">
+                                        {{ meal.day_type === 'training' ? '训练日' : '休息日' }}
+                                    </span>
                                 </h3>
                                 <p class="text-xs text-gray-400">ID: {{ meal.id }}</p>
                             </div>
@@ -277,13 +289,17 @@
                             <h3 class="text-xl font-bold">每日目标</h3>
                             <button @click="saveGoals" class="text-sm bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700">保存</button>
                         </div>
+                        <div class="flex gap-2 mb-3">
+                            <button @click="currentGoalType = 'rest'" :class="['px-3 py-1 rounded text-sm border', currentGoalType === 'rest' ? 'bg-blue-100 text-blue-700 border-blue-300' : 'bg-gray-100 text-gray-600']">休息日</button>
+                            <button @click="currentGoalType = 'training'" :class="['px-3 py-1 rounded text-sm border', currentGoalType === 'training' ? 'bg-blue-100 text-blue-700 border-blue-300' : 'bg-gray-100 text-gray-600']">训练日</button>
+                        </div>
                         <div class="space-y-3 max-h-[400px] overflow-y-auto pr-2">
-                            <div v-for="(range, nutrient) in goals" :key="nutrient" class="flex items-center justify-between text-sm bg-gray-50 p-2 rounded">
+                            <div v-for="(range, nutrient) in goals[currentGoalType]" :key="nutrient" class="flex items-center justify-between text-sm bg-gray-50 p-2 rounded">
                                 <span class="font-medium truncate w-1/3" :title="nutrient">{{ nutrient }}</span>
                                 <div class="flex items-center gap-2">
-                                    <input v-model.number="goals[nutrient].min_per_day" placeholder="Min" type="number" class="w-20 border rounded p-1 text-center text-sm">
+                                    <input v-model.number="goals[currentGoalType][nutrient].min_per_day" placeholder="Min" type="number" class="w-20 border rounded p-1 text-center text-sm">
                                     <span class="text-gray-400">-</span>
-                                    <input v-model.number="goals[nutrient].max_per_day" placeholder="Max" type="number" class="w-20 border rounded p-1 text-center text-sm">
+                                    <input v-model.number="goals[currentGoalType][nutrient].max_per_day" placeholder="Max" type="number" class="w-20 border rounded p-1 text-center text-sm">
                                 </div>
                             </div>
                             <div class="flex items-center gap-2 text-sm border-t pt-3 mt-2">
@@ -292,6 +308,78 @@
                                     <i class="fas fa-plus"></i>
                                 </button>
                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div class="bg-white p-6 rounded-lg shadow">
+                        <div class="flex justify-between items-center mb-4 border-b pb-2">
+                            <h3 class="text-xl font-bold">体重记录</h3>
+                            <button @click="submitWeight" class="text-sm bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700">保存/新增</button>
+                        </div>
+                        <form @submit.prevent="submitWeight" class="space-y-3">
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-sm text-gray-700">体重 (kg)</label>
+                                    <input v-model.number="weightForm.value_kg" type="number" step="0.1" class="w-full border p-2 rounded">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-700">记录时间</label>
+                                    <input v-model="weightForm.logged_at" type="datetime-local" class="w-full border p-2 rounded">
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-sm text-gray-700">备注</label>
+                                <input v-model="weightForm.note" type="text" class="w-full border p-2 rounded">
+                            </div>
+                            <div class="flex gap-2">
+                                <button type="button" @click="resetWeightForm" class="px-3 py-1 text-sm bg-gray-100 rounded border">重置</button>
+                                <button type="submit" class="px-3 py-1 text-sm bg-blue-600 text-white rounded">保存</button>
+                            </div>
+                        </form>
+                        <div class="mt-4 max-h-64 overflow-y-auto">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="text-gray-400">
+                                        <th class="text-left py-1">时间</th>
+                                        <th class="text-left py-1">体重</th>
+                                        <th class="text-left py-1">备注</th>
+                                        <th class="text-right py-1">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="w in weights" :key="w.id" class="border-t">
+                                        <td class="py-1">{{ formatTime(w.logged_at) }}</td>
+                                        <td class="py-1 font-mono">{{ w.value_kg }} kg</td>
+                                        <td class="py-1 text-gray-500">{{ w.note || '-' }}</td>
+                                        <td class="py-1 text-right">
+                                            <button @click="editWeight(w)" class="text-blue-600 text-xs mr-2">编辑</button>
+                                            <button @click="deleteWeight(w.id)" class="text-red-600 text-xs">删除</button>
+                                        </td>
+                                    </tr>
+                                    <tr v-if="weights.length === 0">
+                                        <td colspan="4" class="text-center text-gray-400 py-3 text-xs">暂无记录</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow">
+                        <div class="flex justify-between items-center mb-4 border-b pb-2">
+                            <h3 class="text-xl font-bold">体重趋势</h3>
+                            <span class="text-xs text-gray-400">最近 30 天</span>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2 text-sm text-gray-600 mb-3">
+                            <div>最新: <span class="font-semibold">{{ weightStats.latest ? weightStats.latest.value_kg : '--' }} kg</span></div>
+                            <div>平均: <span class="font-semibold">{{ weightStats.avg || '--' }} kg</span></div>
+                            <div>最低: <span class="font-semibold">{{ weightStats.min || '--' }} kg</span></div>
+                            <div>最高: <span class="font-semibold">{{ weightStats.max || '--' }} kg</span></div>
+                            <div>变化: <span :class="(weightStats.delta || 0) >= 0 ? 'text-red-500' : 'text-green-600'">{{ weightStats.delta || 0 }} kg</span></div>
+                            <div>记录数: <span class="font-semibold">{{ weightStats.count || 0 }}</span></div>
+                        </div>
+                        <div class="h-64">
+                            <canvas id="weightChart"></canvas>
                         </div>
                     </div>
                 </div>
@@ -306,7 +394,7 @@
                 </h3>
                 
                 <div class="flex-1 overflow-y-auto pr-2 space-y-4">
-                    <div class="grid grid-cols-2 gap-4">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">餐点名称 (可选)</label>
                             <input v-model="mealForm.name" placeholder="例如: 早餐, 训练后..." class="w-full border p-2 rounded">
@@ -314,6 +402,14 @@
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">进食时间</label>
                             <input v-model="mealForm.meal_time" type="datetime-local" class="w-full border p-2 rounded">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">日类型</label>
+                            <select v-model="mealForm.day_type" class="w-full border p-2 rounded">
+                                <option value="rest">休息日</option>
+                                <option value="training">训练日</option>
+                            </select>
+                            <p class="text-[10px] text-gray-400 mt-1">用于匹配对应的营养上下限</p>
                         </div>
                     </div>
 
@@ -445,9 +541,14 @@
                 const intakes = ref([]);
                 const profile = ref({});
                 const metrics = ref({});
-                const goals = ref({});
-                const analytics = ref({ totals: {}, period_days: 7 });
+                const goals = ref({ rest: {}, training: {} });
+                const currentGoalType = ref('rest');
+                const analytics = ref({ totals: {}, period_days: 7, active_days: 0 });
+                const analyticsMeta = ref({});
+                const todayTotals = ref({});
                 const analyticsPeriod = ref('week');
+                const weights = ref([]);
+                const weightStats = ref({});
 
                 // UI
                 const showMealModal = ref(false);
@@ -462,7 +563,16 @@
                 const mealForm = reactive({
                     name: '',
                     meal_time: '',
+                    day_type: 'rest',
                     items: [] 
+                });
+
+                // Weight Form
+                const weightForm = reactive({
+                    id: null,
+                    value_kg: '',
+                    logged_at: '',
+                    note: ''
                 });
 
                 // Food Form
@@ -512,11 +622,13 @@
                     if (pData) {
                         profile.value = pData.profile;
                         metrics.value = pData.metrics;
+                        if (pData.latest_weight) weightStats.value.latest = pData.latest_weight;
                     }
                     const gData = await fetchAPI('/user/goals');
                     if (gData) {
-                        goals.value = gData;
-                        if(!goals.value['Calories']) goals.value['Calories'] = { min_per_day: 2000, max_per_day: 2500 };
+                        goals.value = { rest: gData.rest || {}, training: gData.training || {} };
+                        if(!goals.value.rest['Calories']) goals.value.rest['Calories'] = { min_per_day: 2000, max_per_day: 2500 };
+                        if(!goals.value.training['Calories']) goals.value.training['Calories'] = { min_per_day: null, max_per_day: null };
                     }
 
                     // Tab specific
@@ -533,6 +645,10 @@
                     if (currentTab.value === 'intake') {
                         intakes.value = await fetchAPI('/intakes');
                     }
+
+                    if (currentTab.value === 'profile') {
+                        fetchWeights();
+                    }
                 };
 
                 // --- Dashboard ---
@@ -540,20 +656,27 @@
                     const data = await fetchAPI(`/analytics/summary?period=${analyticsPeriod.value}`);
                     if (data) {
                         analytics.value = data.summary;
+                        analyticsMeta.value = { period: data.period, sample_size: data.sample_size, day_types: data.day_types, weight_stats: data.weight_stats };
                         const dailyData = await fetchAPI(`/analytics/daily-breakdown`);
-                        renderChart(dailyData.days);
+                        if (dailyData) {
+                            renderChart(dailyData.days);
+                            const pacificDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+                            const todayKey = pacificDate.toISOString().slice(0, 10);
+                            todayTotals.value = dailyData.days?.[todayKey] || {};
+                        }
                     }
                 };
 
                 let chartInstance = null;
+                let weightChartInstance = null;
                 const renderChart = (daysData) => {
                     const ctx = document.getElementById('trendChart');
                     if (!ctx) return;
                     if (chartInstance) chartInstance.destroy();
                     
-                    const labels = Object.keys(daysData).sort();
-                    const calories = labels.map(d => daysData[d]['Calories'] || 0);
-                    const protein = labels.map(d => daysData[d]['Protein'] || 0);
+                    const labels = Object.keys(daysData || {}).sort();
+                    const calories = labels.map(d => (daysData?.[d]?.['Calories'] || 0));
+                    const protein = labels.map(d => (daysData?.[d]?.['Protein'] || 0));
 
                     chartInstance = new Chart(ctx, {
                         type: 'line',
@@ -577,10 +700,32 @@
                     });
                 };
 
+                const renderWeightChart = () => {
+                    const ctx = document.getElementById('weightChart');
+                    if (!ctx) return;
+                    if (weightChartInstance) weightChartInstance.destroy();
+                    const labels = (weights.value || []).map(w => w.logged_at).reverse();
+                    const vals = (weights.value || []).map(w => w.value_kg).reverse();
+                    weightChartInstance = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels,
+                            datasets: [{ label: 'Weight (kg)', data: vals, borderColor: '#f59e0b', tension: 0.3, fill: false }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: { y: { beginAtZero: false } },
+                            plugins: { legend: { display: true, position: 'top' } }
+                        }
+                    });
+                };
+
                 // --- Meals Logic (New) ---
                 const openMealModal = () => {
                     // Reset Form
                     mealForm.name = '';
+                    mealForm.day_type = 'rest';
                     // Default to local time string format for datetime-local input
                     const now = new Date();
                     now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
@@ -608,6 +753,7 @@
                     const payload = {
                         name: mealForm.name || null,
                         meal_time: new Date(mealForm.meal_time).toISOString(), // Convert local input back to ISO
+                        day_type: mealForm.day_type,
                         items: mealForm.items.map(item => {
                             if (item.template_id) {
                                 return { template_id: item.template_id, grams: item.grams };
@@ -712,24 +858,86 @@
                 // --- Profile Logic ---
                 const updateProfile = async () => {
                     const res = await fetchAPI('/user/profile', 'PUT', profile.value);
-                    if (res) metrics.value = res.metrics;
+                    if (res) {
+                        metrics.value = res.metrics;
+                        if (res.latest_weight) weightStats.value.latest = res.latest_weight;
+                    }
                     alert("个人信息已更新");
                 };
 
                 const saveGoals = async () => {
-                    const payload = Object.keys(goals.value).map(k => ({
-                        nutrient: k,
-                        min_per_day: goals.value[k].min_per_day,
-                        max_per_day: goals.value[k].max_per_day
-                    }));
+                    const payload = [];
+                    Object.keys(goals.value).forEach(dayType => {
+                        Object.keys(goals.value[dayType]).forEach(k => {
+                            payload.push({
+                                nutrient: k,
+                                min_per_day: goals.value[dayType][k].min_per_day,
+                                max_per_day: goals.value[dayType][k].max_per_day,
+                                day_type: dayType
+                            });
+                        });
+                    });
                     await fetchAPI('/user/goals', 'PUT', payload);
                     alert("目标已保存");
                 };
 
                 const addGoal = () => {
-                    if (newGoalName.value && !goals.value[newGoalName.value]) {
-                        goals.value[newGoalName.value] = { min_per_day: null, max_per_day: null };
+                    if (newGoalName.value && !goals.value[currentGoalType.value][newGoalName.value]) {
+                        goals.value[currentGoalType.value][newGoalName.value] = { min_per_day: null, max_per_day: null };
                         newGoalName.value = '';
+                    }
+                };
+
+                // --- Weight Logic ---
+                const resetWeightForm = () => {
+                    weightForm.id = null;
+                    weightForm.value_kg = '';
+                    const now = new Date();
+                    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+                    weightForm.logged_at = now.toISOString().slice(0, 16);
+                    weightForm.note = '';
+                };
+
+                const editWeight = (w) => {
+                    weightForm.id = w.id;
+                    weightForm.value_kg = w.value_kg;
+                    // logged_at is iso; convert to local for input
+                    const dt = new Date(w.logged_at);
+                    dt.setMinutes(dt.getMinutes() - dt.getTimezoneOffset());
+                    weightForm.logged_at = dt.toISOString().slice(0, 16);
+                    weightForm.note = w.note || '';
+                };
+
+                const submitWeight = async () => {
+                    const loggedIso = weightForm.logged_at ? new Date(weightForm.logged_at).toISOString() : new Date().toISOString();
+                    const payload = {
+                        value_kg: weightForm.value_kg,
+                        logged_at: loggedIso,
+                        note: weightForm.note || null
+                    };
+                    if (weightForm.id) {
+                        await fetchAPI(`/weights/${weightForm.id}`, 'PUT', payload);
+                    } else {
+                        await fetchAPI('/weights', 'POST', payload);
+                    }
+                    resetWeightForm();
+                    fetchWeights();
+                };
+
+                const deleteWeight = async (id) => {
+                    if (confirm('删除此条体重记录?')) {
+                        await fetchAPI(`/weights/${id}`, 'DELETE');
+                        fetchWeights();
+                    }
+                };
+
+                const fetchWeights = async () => {
+                    const data = await fetchAPI('/weights');
+                    if (data) {
+                        weights.value = data;
+                        const stats = await fetchAPI('/weights/summary');
+                        if (stats) weightStats.value = stats;
+                        renderWeightChart();
                     }
                 };
 
@@ -737,7 +945,7 @@
                 const formatTime = (iso) => {
                     if (!iso) return '';
                     return new Date(iso).toLocaleString('zh-CN', { 
-                        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' 
+                        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' 
                     });
                 };
 
@@ -775,17 +983,22 @@
                     return '-';
                 };
 
-                onMounted(fetchData);
+                onMounted(() => {
+                    resetWeightForm();
+                    fetchData();
+                });
 
                 return {
                     apiUrl, tabs, currentTab, backendStatus, switchTab,
-                    foods, meals, intakes, profile, metrics, goals, analytics, analyticsPeriod,
-                    showMealModal, showFoodModal, showBulkImport, mealForm, foodForm, newGoalName, newNutrientKey, bulkImportJson,
-                    fetchData, fetchAnalytics, 
+                    foods, meals, intakes, profile, metrics, goals, currentGoalType, analytics, analyticsMeta, todayTotals, analyticsPeriod,
+                    weights, weightStats,
+                    showMealModal, showFoodModal, showBulkImport, mealForm, foodForm, newGoalName, newNutrientKey, bulkImportJson, weightForm,
+                    fetchData, fetchAnalytics, fetchWeights,
                     openMealModal, addMealItem, removeMealItem, submitMeal, deleteMeal, onMealItemTemplateChange,
                     deleteIntake, 
                     openFoodModal, editFood, submitFood, deleteFood, toggleFavorite, submitBulkImport, 
                     updateProfile, saveGoals, addGoal,
+                    resetWeightForm, editWeight, submitWeight, deleteWeight,
                     formatTime, filterMainNutrients, getStatusColor, getStatusBadge, getProgressBarColor, getGoalText
                 };
             }
