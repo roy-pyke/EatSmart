@@ -11,7 +11,7 @@
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f3f4f6; }
         .nav-item.active { background-color: #3b82f6; color: white; }
-        /* Custom Scrollbar for tables */
+        /* Custom Scrollbar */
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
@@ -60,7 +60,7 @@
                     <div class="bg-white p-6 rounded-lg shadow border-l-4 border-blue-500">
                         <h3 class="text-gray-500 text-sm font-semibold">BMI 指数</h3>
                         <p class="text-3xl font-bold mt-2 text-gray-800">{{ metrics.bmi || '--' }}</p>
-                        <span class="text-xs text-gray-400">基于最新身高体重</span>
+                        <span class="text-xs text-gray-400">基于最新体重</span>
                     </div>
                     <div class="bg-white p-6 rounded-lg shadow border-l-4 border-purple-500">
                         <h3 class="text-gray-500 text-sm font-semibold">基础代谢 (BMR)</h3>
@@ -71,7 +71,7 @@
                         <h3 class="text-gray-500 text-sm font-semibold">今日摄入 (Pacific)</h3>
                         <p class="text-xl font-bold mt-2 text-gray-800">Calories: {{ Math.round(todayTotals.Calories || 0) }} kcal</p>
                         <p class="text-sm text-gray-700">Protein: {{ Math.round(todayTotals.Protein || 0) }} g</p>
-                        <span class="text-xs text-gray-400">按美西当天汇总</span>
+                        <span class="text-xs text-gray-400">按美西时间当天汇总</span>
                     </div>
                     <div class="bg-white p-6 rounded-lg shadow border-l-4 border-amber-500">
                         <h3 class="text-gray-500 text-sm font-semibold">记录样本</h3>
@@ -268,6 +268,7 @@
                                 <div>
                                     <label class="block text-sm font-medium text-gray-700">体重 (kg)</label>
                                     <input v-model.number="profile.weight_kg" type="number" step="0.1" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border p-2 focus:ring-blue-500 focus:border-blue-500">
+                                    <p class="text-xs text-gray-400 mt-1">注：BMI 计算将优先使用下方最新的体重记录。</p>
                                 </div>
                                 <div>
                                     <label class="block text-sm font-medium text-gray-700">年龄</label>
@@ -290,8 +291,8 @@
                             <button @click="saveGoals" class="text-sm bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700">保存</button>
                         </div>
                         <div class="flex gap-2 mb-3">
-                            <button @click="currentGoalType = 'rest'" :class="['px-3 py-1 rounded text-sm border', currentGoalType === 'rest' ? 'bg-blue-100 text-blue-700 border-blue-300' : 'bg-gray-100 text-gray-600']">休息日</button>
-                            <button @click="currentGoalType = 'training'" :class="['px-3 py-1 rounded text-sm border', currentGoalType === 'training' ? 'bg-blue-100 text-blue-700 border-blue-300' : 'bg-gray-100 text-gray-600']">训练日</button>
+                            <button @click="currentGoalType = 'rest'" :class="['px-3 py-1 rounded text-sm border transition-colors', currentGoalType === 'rest' ? 'bg-blue-100 text-blue-700 border-blue-300 font-bold' : 'bg-gray-100 text-gray-600 hover:bg-gray-200']">休息日 (Rest)</button>
+                            <button @click="currentGoalType = 'training'" :class="['px-3 py-1 rounded text-sm border transition-colors', currentGoalType === 'training' ? 'bg-orange-100 text-orange-700 border-orange-300 font-bold' : 'bg-gray-100 text-gray-600 hover:bg-gray-200']">训练日 (Training)</button>
                         </div>
                         <div class="space-y-3 max-h-[400px] overflow-y-auto pr-2">
                             <div v-for="(range, nutrient) in goals[currentGoalType]" :key="nutrient" class="flex items-center justify-between text-sm bg-gray-50 p-2 rounded">
@@ -322,7 +323,7 @@
                             <div class="grid grid-cols-2 gap-3">
                                 <div>
                                     <label class="block text-sm text-gray-700">体重 (kg)</label>
-                                    <input v-model.number="weightForm.value_kg" type="number" step="0.1" class="w-full border p-2 rounded">
+                                    <input v-model.number="weightForm.value_kg" type="number" step="0.1" class="w-full border p-2 rounded" required>
                                 </div>
                                 <div>
                                     <label class="block text-sm text-gray-700">记录时间</label>
@@ -333,29 +334,28 @@
                                 <label class="block text-sm text-gray-700">备注</label>
                                 <input v-model="weightForm.note" type="text" class="w-full border p-2 rounded">
                             </div>
-                            <div class="flex gap-2">
-                                <button type="button" @click="resetWeightForm" class="px-3 py-1 text-sm bg-gray-100 rounded border">重置</button>
-                                <button type="submit" class="px-3 py-1 text-sm bg-blue-600 text-white rounded">保存</button>
+                            <div class="flex gap-2 justify-end">
+                                <button type="button" @click="resetWeightForm" class="px-3 py-1 text-sm bg-gray-100 rounded border hover:bg-gray-200">重置表单</button>
                             </div>
                         </form>
                         <div class="mt-4 max-h-64 overflow-y-auto">
                             <table class="w-full text-sm">
                                 <thead>
-                                    <tr class="text-gray-400">
-                                        <th class="text-left py-1">时间</th>
-                                        <th class="text-left py-1">体重</th>
-                                        <th class="text-left py-1">备注</th>
-                                        <th class="text-right py-1">操作</th>
+                                    <tr class="text-gray-400 border-b">
+                                        <th class="text-left py-2">时间</th>
+                                        <th class="text-left py-2">体重</th>
+                                        <th class="text-left py-2">备注</th>
+                                        <th class="text-right py-2">操作</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="w in weights" :key="w.id" class="border-t">
-                                        <td class="py-1">{{ formatTime(w.logged_at) }}</td>
-                                        <td class="py-1 font-mono">{{ w.value_kg }} kg</td>
-                                        <td class="py-1 text-gray-500">{{ w.note || '-' }}</td>
-                                        <td class="py-1 text-right">
-                                            <button @click="editWeight(w)" class="text-blue-600 text-xs mr-2">编辑</button>
-                                            <button @click="deleteWeight(w.id)" class="text-red-600 text-xs">删除</button>
+                                    <tr v-for="w in weights" :key="w.id" class="border-b last:border-0 hover:bg-gray-50">
+                                        <td class="py-2">{{ formatTime(w.logged_at) }}</td>
+                                        <td class="py-2 font-mono font-bold">{{ w.value_kg }} kg</td>
+                                        <td class="py-2 text-gray-500 truncate max-w-[100px]">{{ w.note || '-' }}</td>
+                                        <td class="py-2 text-right">
+                                            <button @click="editWeight(w)" class="text-blue-600 text-xs mr-2 hover:underline">编辑</button>
+                                            <button @click="deleteWeight(w.id)" class="text-red-600 text-xs hover:underline">删除</button>
                                         </td>
                                     </tr>
                                     <tr v-if="weights.length === 0">
@@ -365,20 +365,21 @@
                             </table>
                         </div>
                     </div>
+                    
                     <div class="bg-white p-6 rounded-lg shadow">
                         <div class="flex justify-between items-center mb-4 border-b pb-2">
                             <h3 class="text-xl font-bold">体重趋势</h3>
                             <span class="text-xs text-gray-400">最近 30 天</span>
                         </div>
                         <div class="grid grid-cols-2 gap-2 text-sm text-gray-600 mb-3">
-                            <div>最新: <span class="font-semibold">{{ weightStats.latest ? weightStats.latest.value_kg : '--' }} kg</span></div>
-                            <div>平均: <span class="font-semibold">{{ weightStats.avg || '--' }} kg</span></div>
-                            <div>最低: <span class="font-semibold">{{ weightStats.min || '--' }} kg</span></div>
-                            <div>最高: <span class="font-semibold">{{ weightStats.max || '--' }} kg</span></div>
-                            <div>变化: <span :class="(weightStats.delta || 0) >= 0 ? 'text-red-500' : 'text-green-600'">{{ weightStats.delta || 0 }} kg</span></div>
-                            <div>记录数: <span class="font-semibold">{{ weightStats.count || 0 }}</span></div>
+                            <div>最新: <span class="font-semibold text-gray-800">{{ weightStats.latest ? weightStats.latest.value_kg : '--' }} kg</span></div>
+                            <div>平均: <span class="font-semibold text-gray-800">{{ weightStats.avg || '--' }} kg</span></div>
+                            <div>最低: <span class="font-semibold text-gray-800">{{ weightStats.min || '--' }} kg</span></div>
+                            <div>最高: <span class="font-semibold text-gray-800">{{ weightStats.max || '--' }} kg</span></div>
+                            <div>变化: <span :class="(weightStats.delta || 0) >= 0 ? 'text-red-500' : 'text-green-600'">{{ (weightStats.delta || 0) > 0 ? '+' : ''}}{{ weightStats.delta || 0 }} kg</span></div>
+                            <div>记录数: <span class="font-semibold text-gray-800">{{ weightStats.count || 0 }}</span></div>
                         </div>
-                        <div class="h-64">
+                        <div class="h-64 relative">
                             <canvas id="weightChart"></canvas>
                         </div>
                     </div>
@@ -405,11 +406,11 @@
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">日类型</label>
-                            <select v-model="mealForm.day_type" class="w-full border p-2 rounded">
-                                <option value="rest">休息日</option>
-                                <option value="training">训练日</option>
+                            <select v-model="mealForm.day_type" class="w-full border p-2 rounded bg-gray-50">
+                                <option value="rest">休息日 (Rest)</option>
+                                <option value="training">训练日 (Training)</option>
                             </select>
-                            <p class="text-[10px] text-gray-400 mt-1">用于匹配对应的营养上下限</p>
+                            <p class="text-[10px] text-gray-400 mt-1">影响当天的营养目标计算</p>
                         </div>
                     </div>
 
@@ -541,6 +542,7 @@
                 const intakes = ref([]);
                 const profile = ref({});
                 const metrics = ref({});
+                // 目标现在分 rest / training 两套
                 const goals = ref({ rest: {}, training: {} });
                 const currentGoalType = ref('rest');
                 const analytics = ref({ totals: {}, period_days: 7, active_days: 0 });
@@ -550,7 +552,7 @@
                 const weights = ref([]);
                 const weightStats = ref({});
 
-                // UI
+                // UI States
                 const showMealModal = ref(false);
                 const showFoodModal = ref(false);
                 const showBulkImport = ref(false);
@@ -559,7 +561,6 @@
                 const bulkImportJson = ref('');
 
                 // Forms
-                // Meal Form
                 const mealForm = reactive({
                     name: '',
                     meal_time: '',
@@ -567,7 +568,6 @@
                     items: [] 
                 });
 
-                // Weight Form
                 const weightForm = reactive({
                     id: null,
                     value_kg: '',
@@ -575,7 +575,6 @@
                     note: ''
                 });
 
-                // Food Form
                 const foodForm = reactive({
                     id: null,
                     name: '',
@@ -587,7 +586,7 @@
 
                 const tabs = [
                     { id: 'dashboard', name: '仪表盘', icon: 'fa-chart-pie' },
-                    { id: 'meals', name: '用餐记录', icon: 'fa-utensils' }, // New Tab
+                    { id: 'meals', name: '用餐记录', icon: 'fa-utensils' },
                     { id: 'intake', name: '所有明细', icon: 'fa-list' },
                     { id: 'foods', name: '食物库', icon: 'fa-book-open' },
                     { id: 'profile', name: '个人配置', icon: 'fa-user-cog' },
@@ -617,21 +616,24 @@
                 };
 
                 const fetchData = async () => {
-                    // Global Data needed for calculations
+                    // Profile & Weight Data
                     const pData = await fetchAPI('/user/profile');
                     if (pData) {
                         profile.value = pData.profile;
                         metrics.value = pData.metrics;
                         if (pData.latest_weight) weightStats.value.latest = pData.latest_weight;
                     }
+                    
+                    // Goals Data
                     const gData = await fetchAPI('/user/goals');
                     if (gData) {
                         goals.value = { rest: gData.rest || {}, training: gData.training || {} };
+                        // Ensure defaults if empty for easier editing
                         if(!goals.value.rest['Calories']) goals.value.rest['Calories'] = { min_per_day: 2000, max_per_day: 2500 };
                         if(!goals.value.training['Calories']) goals.value.training['Calories'] = { min_per_day: null, max_per_day: null };
                     }
 
-                    // Tab specific
+                    // Tab Specific Loading
                     if (currentTab.value === 'dashboard') fetchAnalytics();
                     
                     if (['meals', 'intake', 'foods'].includes(currentTab.value) || showMealModal.value) {
@@ -656,10 +658,17 @@
                     const data = await fetchAPI(`/analytics/summary?period=${analyticsPeriod.value}`);
                     if (data) {
                         analytics.value = data.summary;
-                        analyticsMeta.value = { period: data.period, sample_size: data.sample_size, day_types: data.day_types, weight_stats: data.weight_stats };
+                        analyticsMeta.value = { 
+                            period: data.period, 
+                            sample_size: data.sample_size, 
+                            day_types: data.day_types, 
+                            weight_stats: data.weight_stats 
+                        };
+                        
                         const dailyData = await fetchAPI(`/analytics/daily-breakdown`);
                         if (dailyData) {
                             renderChart(dailyData.days);
+                            // Calculate "Today" in Pacific time to show correct today card
                             const pacificDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
                             const todayKey = pacificDate.toISOString().slice(0, 10);
                             todayTotals.value = dailyData.days?.[todayKey] || {};
@@ -669,6 +678,7 @@
 
                 let chartInstance = null;
                 let weightChartInstance = null;
+
                 const renderChart = (daysData) => {
                     const ctx = document.getElementById('trendChart');
                     if (!ctx) return;
@@ -704,7 +714,8 @@
                     const ctx = document.getElementById('weightChart');
                     if (!ctx) return;
                     if (weightChartInstance) weightChartInstance.destroy();
-                    const labels = (weights.value || []).map(w => w.logged_at).reverse();
+                    // Weight data might be reversed or not sorted, API sorts by desc, so reverse for chart
+                    const labels = (weights.value || []).map(w => w.logged_at.slice(0, 10)).reverse();
                     const vals = (weights.value || []).map(w => w.value_kg).reverse();
                     weightChartInstance = new Chart(ctx, {
                         type: 'line',
@@ -716,22 +727,21 @@
                             responsive: true,
                             maintainAspectRatio: false,
                             scales: { y: { beginAtZero: false } },
-                            plugins: { legend: { display: true, position: 'top' } }
+                            plugins: { legend: { display: false } }
                         }
                     });
                 };
 
-                // --- Meals Logic (New) ---
+                // --- Meals Logic ---
                 const openMealModal = () => {
-                    // Reset Form
                     mealForm.name = '';
                     mealForm.day_type = 'rest';
-                    // Default to local time string format for datetime-local input
+                    // Default to local time string for input
                     const now = new Date();
                     now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
                     mealForm.meal_time = now.toISOString().slice(0, 16);
                     mealForm.items = [];
-                    addMealItem(); // start with one empty row
+                    addMealItem();
                     showMealModal.value = true;
                 };
 
@@ -749,10 +759,9 @@
                 };
 
                 const submitMeal = async () => {
-                    // Construct payload
                     const payload = {
                         name: mealForm.name || null,
-                        meal_time: new Date(mealForm.meal_time).toISOString(), // Convert local input back to ISO
+                        meal_time: new Date(mealForm.meal_time).toISOString(),
                         day_type: mealForm.day_type,
                         items: mealForm.items.map(item => {
                             if (item.template_id) {
@@ -762,12 +771,11 @@
                                     name: item.name || 'Custom Food', 
                                     grams: item.grams, 
                                     nutrients: item.nutrients,
-                                    nutrients_base_quantity: 100 // assuming custom entry is per 100g
+                                    nutrients_base_quantity: 100 
                                 };
                             }
                         })
                     };
-
                     await fetchAPI('/meals', 'POST', payload);
                     showMealModal.value = false;
                     fetchData();
@@ -780,12 +788,65 @@
                     }
                 };
                 
-                // Helper for meal modal
                 const onMealItemTemplateChange = (item) => {
-                    // Could pre-fill grams with base quantity if desired, but 100g is safe default
+                    // Placeholder for future logic
                 };
 
-                // --- Intake Logic (Legacy/Individual) ---
+                // --- Weight Logic ---
+                const resetWeightForm = () => {
+                    weightForm.id = null;
+                    weightForm.value_kg = '';
+                    const now = new Date();
+                    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+                    weightForm.logged_at = now.toISOString().slice(0, 16);
+                    weightForm.note = '';
+                };
+
+                const editWeight = (w) => {
+                    weightForm.id = w.id;
+                    weightForm.value_kg = w.value_kg;
+                    const dt = new Date(w.logged_at);
+                    dt.setMinutes(dt.getMinutes() - dt.getTimezoneOffset());
+                    weightForm.logged_at = dt.toISOString().slice(0, 16);
+                    weightForm.note = w.note || '';
+                };
+
+                const submitWeight = async () => {
+                    const loggedIso = weightForm.logged_at ? new Date(weightForm.logged_at).toISOString() : new Date().toISOString();
+                    const payload = {
+                        value_kg: weightForm.value_kg,
+                        logged_at: loggedIso,
+                        note: weightForm.note || null
+                    };
+                    if (weightForm.id) {
+                        await fetchAPI(`/weights/${weightForm.id}`, 'PUT', payload);
+                    } else {
+                        await fetchAPI('/weights', 'POST', payload);
+                    }
+                    resetWeightForm();
+                    fetchWeights();
+                    // Update profile metrics as weight changed
+                    fetchAPI('/user/profile').then(res => { if(res) metrics.value = res.metrics; });
+                };
+
+                const deleteWeight = async (id) => {
+                    if (confirm('删除此条体重记录?')) {
+                        await fetchAPI(`/weights/${id}`, 'DELETE');
+                        fetchWeights();
+                    }
+                };
+
+                const fetchWeights = async () => {
+                    const data = await fetchAPI('/weights');
+                    if (data) {
+                        weights.value = data;
+                        const stats = await fetchAPI('/weights/summary');
+                        if (stats) weightStats.value = stats;
+                        renderWeightChart();
+                    }
+                };
+
+                // --- Other Logic ---
                 const deleteIntake = async (id) => {
                     if(confirm("删除此条记录?")) {
                         await fetchAPI(`/intakes/${id}`, 'DELETE');
@@ -793,20 +854,17 @@
                     }
                 };
 
-                // --- Food Logic ---
                 const openFoodModal = () => {
                     resetFoodForm();
                     showFoodModal.value = true;
                 };
 
                 const editFood = (food) => {
-                    // Clone data to form
-                    // Important: Use nutrients_per_base and base_quantity so user sees what they entered
                     foodForm.id = food.id;
                     foodForm.name = food.name;
                     foodForm.category = food.category;
                     foodForm.base_quantity = food.base_quantity;
-                    foodForm.nutrients = JSON.parse(JSON.stringify(food.nutrients_per_base)); // deep copy
+                    foodForm.nutrients = JSON.parse(JSON.stringify(food.nutrients_per_base));
                     foodForm.favorite = food.favorite;
                     showFoodModal.value = true;
                 };
@@ -855,7 +913,6 @@
                     foodForm.favorite = false;
                 };
 
-                // --- Profile Logic ---
                 const updateProfile = async () => {
                     const res = await fetchAPI('/user/profile', 'PUT', profile.value);
                     if (res) {
@@ -867,6 +924,7 @@
 
                 const saveGoals = async () => {
                     const payload = [];
+                    // Flatten goals for backend
                     Object.keys(goals.value).forEach(dayType => {
                         Object.keys(goals.value[dayType]).forEach(k => {
                             payload.push({
@@ -888,60 +946,6 @@
                     }
                 };
 
-                // --- Weight Logic ---
-                const resetWeightForm = () => {
-                    weightForm.id = null;
-                    weightForm.value_kg = '';
-                    const now = new Date();
-                    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
-                    weightForm.logged_at = now.toISOString().slice(0, 16);
-                    weightForm.note = '';
-                };
-
-                const editWeight = (w) => {
-                    weightForm.id = w.id;
-                    weightForm.value_kg = w.value_kg;
-                    // logged_at is iso; convert to local for input
-                    const dt = new Date(w.logged_at);
-                    dt.setMinutes(dt.getMinutes() - dt.getTimezoneOffset());
-                    weightForm.logged_at = dt.toISOString().slice(0, 16);
-                    weightForm.note = w.note || '';
-                };
-
-                const submitWeight = async () => {
-                    const loggedIso = weightForm.logged_at ? new Date(weightForm.logged_at).toISOString() : new Date().toISOString();
-                    const payload = {
-                        value_kg: weightForm.value_kg,
-                        logged_at: loggedIso,
-                        note: weightForm.note || null
-                    };
-                    if (weightForm.id) {
-                        await fetchAPI(`/weights/${weightForm.id}`, 'PUT', payload);
-                    } else {
-                        await fetchAPI('/weights', 'POST', payload);
-                    }
-                    resetWeightForm();
-                    fetchWeights();
-                };
-
-                const deleteWeight = async (id) => {
-                    if (confirm('删除此条体重记录?')) {
-                        await fetchAPI(`/weights/${id}`, 'DELETE');
-                        fetchWeights();
-                    }
-                };
-
-                const fetchWeights = async () => {
-                    const data = await fetchAPI('/weights');
-                    if (data) {
-                        weights.value = data;
-                        const stats = await fetchAPI('/weights/summary');
-                        if (stats) weightStats.value = stats;
-                        renderWeightChart();
-                    }
-                };
-
-                // --- Utilities ---
                 const formatTime = (iso) => {
                     if (!iso) return '';
                     return new Date(iso).toLocaleString('zh-CN', { 
@@ -954,7 +958,6 @@
                     ['Calories', 'Protein', 'Fat', 'Carbs'].forEach(k => {
                         if(totals[k] !== undefined) keyOne[k] = totals[k];
                     });
-                    // Add others if space permits or relevant
                     return keyOne;
                 };
 
