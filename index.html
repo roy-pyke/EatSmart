@@ -123,7 +123,16 @@
                     </div>
 
                     <div class="bg-white p-6 rounded-lg shadow flex flex-col">
-                        <h3 class="text-lg font-bold mb-4 text-gray-700">近期摄入趋势</h3>
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="text-lg font-bold text-gray-700">近期摄入趋势</h3>
+                            <div class="flex gap-1">
+                                 <button v-for="nut in ['Calories', 'Protein', 'Carbs', 'Fat']" 
+                                         @click="trendNutrient = nut; renderChart(latestDailyData)"
+                                         :class="['px-2 py-1 text-xs rounded border transition-colors', trendNutrient === nut ? 'bg-blue-100 text-blue-600 border-blue-300 font-semibold' : 'bg-gray-50 text-gray-500 hover:bg-gray-100']">
+                                     {{ nut }}
+                                 </button>
+                            </div>
+                        </div>
                         <div class="flex-1 min-h-[300px]">
                             <canvas id="trendChart"></canvas>
                         </div>
@@ -567,6 +576,8 @@
                 const todayTotals = ref({});
                 const analyticsPeriod = ref('day'); // Default: Daily
                 const currentPacificDate = ref('');
+                const trendNutrient = ref('Calories'); // New: Chart Toggle
+                const latestDailyData = ref({}); // Cache for toggle
 
                 // Weights
                 const weights = ref([]);
@@ -668,11 +679,24 @@
                             weight_stats: data.weight_stats 
                         };
                         
-                        const dailyData = await fetchAPI(`/analytics/daily-breakdown`);
+                        // Calculate start/end dates for chart based on selection to ensure period matches
+                        // 'day' and 'week' -> show last 7 days. 'month' -> show last 30 days.
+                        let daysBack = 6;
+                        if (analyticsPeriod.value === 'month') daysBack = 29;
+                        
+                        const endDate = new Date();
+                        const startDate = new Date();
+                        startDate.setDate(endDate.getDate() - daysBack);
+                        
+                        const qStart = startDate.toISOString().split('T')[0];
+                        const qEnd = endDate.toISOString().split('T')[0];
+
+                        const dailyData = await fetchAPI(`/analytics/daily-breakdown?start=${qStart}&end=${qEnd}`);
                         if (dailyData) {
+                            latestDailyData.value = dailyData.days;
                             renderChart(dailyData.days);
                             
-                            // Fix #4: Correctly identifying "Today" in Pacific time
+                            // Correctly identifying "Today" in Pacific time
                             const formatter = new Intl.DateTimeFormat('en-CA', {
                                 timeZone: 'America/Los_Angeles',
                                 year: 'numeric', month: '2-digit', day: '2-digit'
@@ -760,16 +784,32 @@
                     if (chartInstance) chartInstance.destroy();
                     
                     const labels = Object.keys(daysData || {}).sort();
-                    const calories = labels.map(d => (daysData?.[d]?.['Calories'] || 0));
-                    const protein = labels.map(d => (daysData?.[d]?.['Protein'] || 0));
+                    const nutrientKey = trendNutrient.value; // 'Calories', 'Protein', etc.
+                    const dataPoints = labels.map(d => (daysData?.[d]?.[nutrientKey] || 0));
+
+                    // Color map for common nutrients
+                    const colors = {
+                        'Calories': { border: '#3b82f6', bg: '#3b82f620' },
+                        'Protein': { border: '#10b981', bg: '#10b98120' },
+                        'Carbs': { border: '#f59e0b', bg: '#f59e0b20' },
+                        'Fat': { border: '#ef4444', bg: '#ef444420' }
+                    };
+                    const style = colors[nutrientKey] || { border: '#6b7280', bg: '#6b728020' };
 
                     chartInstance = new Chart(ctx, {
                         type: 'line',
                         data: {
                             labels: labels,
                             datasets: [
-                                { label: 'Calories', data: calories, borderColor: '#3b82f6', backgroundColor: '#3b82f620', yAxisID: 'y', tension: 0.3, fill: true },
-                                { label: 'Protein (g)', data: protein, borderColor: '#10b981', backgroundColor: '#10b98120', yAxisID: 'y1', tension: 0.3, fill: true }
+                                { 
+                                    label: nutrientKey, 
+                                    data: dataPoints, 
+                                    borderColor: style.border, 
+                                    backgroundColor: style.bg, 
+                                    yAxisID: 'y', 
+                                    tension: 0.3, 
+                                    fill: true 
+                                }
                             ]
                         },
                         options: {
@@ -778,8 +818,7 @@
                             interaction: { mode: 'index', intersect: false },
                             plugins: { legend: { position: 'top' } },
                             scales: {
-                                y: { type: 'linear', display: true, position: 'left', title: {display: true, text: 'Calories'} },
-                                y1: { type: 'linear', display: true, position: 'right', grid: { drawOnChartArea: false }, title: {display: true, text: 'Grams'} },
+                                y: { type: 'linear', display: true, position: 'left' }
                             }
                         }
                     });
@@ -932,9 +971,9 @@
                 return {
                     apiUrl, tabs, currentTab, backendStatus, switchTab,
                     foods, meals, intakes, profile, metrics, goals, currentGoalType, dashboardDayType, analytics, analyticsMeta, todayTotals, analyticsPeriod, currentPacificDate,
-                    weights, weightStats,
+                    weights, weightStats, trendNutrient, latestDailyData,
                     showMealModal, showFoodModal, showBulkImport, mealForm, foodForm, newGoalName, newNutrientKey, bulkImportJson, weightForm,
-                    fetchAnalytics, fetchWeights,
+                    fetchAnalytics, fetchWeights, renderChart,
                     openMealModal, addMealItem, removeMealItem, submitMeal, deleteMeal, onMealItemTemplateChange,
                     deleteIntake, openFoodModal, editFood, submitFood, deleteFood, toggleFavorite, submitBulkImport, updateProfile, saveGoals, addGoal,
                     resetWeightForm, editWeight, submitWeight, deleteWeight,
